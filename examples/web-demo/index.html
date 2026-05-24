@@ -317,18 +317,18 @@
 
     <!-- Background color -->
     <div class="section">
-      <div class="section-title">背景色 · nd_render(bg_r, bg_g, bg_b)</div>
+      <div class="section-title">背景色 · nd_set_background(r,g,b,a)</div>
       <div class="section-body">
         <div class="bg-row">
           <label>背景色: <input type="color" id="bgColor" value="#111827" /></label>
-          <button id="renderBtn" disabled>nd_render() を実行</button>
+          <button id="renderBtn" disabled>nd_begin_frame() / nd_end_frame()</button>
         </div>
       </div>
     </div>
 
     <!-- Add rect -->
     <div class="section">
-      <div class="section-title">矩形ノードを追加 · nd_node_create(x, y, w, h, r, g, b, a, radius)</div>
+      <div class="section-title">矩形ノードを追加 · nd_node_create("rect") + nd_node_update(id, props)</div>
       <div class="section-body">
         <div class="form-row">
           <div class="field"><label>X</label><input type="number" id="rx" value="60" min="0" max="620" /></div>
@@ -457,11 +457,11 @@
       step('s2', 'run');
       overlay('📦', 'WASM モジュールを読み込み中...');
 
-      let NdRenderer;
+      let NdContext;
       try {
         const mod = await import('./pkg/newdom_wasm.js');
         await mod.default();
-        NdRenderer = mod.NdRenderer;
+        NdContext = mod.NdContext;
         step('s2', 'ok');
       } catch (e) {
         step('s2', 'fail'); step('s3', 'fail'); step('s4', 'fail');
@@ -478,26 +478,36 @@
       step('s3', 'run');
       overlay('⚙️', 'wgpu + Vello を初期化中...');
 
-      let renderer;
+      let ctx;
       try {
-        renderer = await NdRenderer.init($('canvas'));
+        ctx = await NdContext.init($('canvas'));
         step('s3', 'ok');
       } catch (e) {
         step('s3', 'fail'); step('s4', 'fail');
         overlay('❌', 'wgpu + Vello 初期化失敗', String(e));
-        console.error('[newdom] Renderer init failed:', e);
+        console.error('[newdom] NdContext init failed:', e);
         throw e;
       }
 
       // ── State ─────────────────────────────────────────────────────────
-      // nodes: Array<{ id: number, x, y, w, h, hex, alpha, radius }>
+      // nodes: Array<{ seq, id, x, y, w, h, hex, alpha, radius }>
       const nodes = [];
       let nodeSeq = 0;
 
       function render() {
         const [br, bg, bb] = hexToRgb01($('bgColor').value);
-        try { renderer.nd_render(br, bg, bb); }
-        catch (e) { console.error('[newdom] nd_render:', e); }
+        try {
+          ctx.nd_set_background(br, bg, bb, 1.0);
+          ctx.nd_begin_frame();
+          ctx.nd_end_frame();
+        } catch (e) { console.error('[newdom] nd_end_frame:', e); }
+      }
+
+      function addRect(x, y, w, h, hex, alpha, radius) {
+        const [r, g, b] = hexToRgb01(hex);
+        const id = ctx.nd_node_create('rect');
+        ctx.nd_node_update(id, { x, y, width: w, height: h, r, g, b, a: alpha, corner_radius: radius });
+        return id;
       }
 
       function rebuildList() {
@@ -523,7 +533,7 @@
             const seq = Number(btn.dataset.seq);
             const idx = nodes.findIndex(n => n.seq === seq);
             if (idx === -1) return;
-            renderer.nd_node_remove(nodes[idx].id);
+            ctx.nd_node_destroy(nodes[idx].id);
             nodes.splice(idx, 1);
             rebuildList();
             render();
@@ -535,15 +545,13 @@
       step('s4', 'run');
       overlay('🎨', '矩形を描画中...');
 
-      // Add 3 sample rects to show the feature
       const samples = [
         { x: 40,  y: 40,  w: 220, h: 130, hex: '#3b82f6', alpha: 1.0,  radius: 16 },
         { x: 300, y: 60,  w: 160, h: 100, hex: '#f59e0b', alpha: 0.85, radius: 8  },
         { x: 160, y: 200, w: 300, h: 120, hex: '#10b981', alpha: 0.9,  radius: 24 },
       ];
       for (const s of samples) {
-        const [r,g,b] = hexToRgb01(s.hex);
-        const id = renderer.nd_node_create(s.x, s.y, s.w, s.h, r, g, b, s.alpha, s.radius);
+        const id = addRect(s.x, s.y, s.w, s.h, s.hex, s.alpha, s.radius);
         nodes.push({ seq: ++nodeSeq, id, ...s });
       }
 
@@ -552,8 +560,8 @@
         step('s4', 'ok');
         overlayGone();
         rebuildList();
-        $('renderBtn').disabled  = false;
-        $('addBtn').disabled     = false;
+        $('renderBtn').disabled   = false;
+        $('addBtn').disabled      = false;
         $('clearAllBtn').disabled = false;
       } catch (e) {
         step('s4', 'fail');
@@ -567,22 +575,21 @@
       $('bgColor').addEventListener('input', render);
 
       $('addBtn').addEventListener('click', () => {
-        const x = Number($('rx').value);
-        const y = Number($('ry').value);
-        const w = Number($('rw').value);
-        const h = Number($('rh').value);
+        const x      = Number($('rx').value);
+        const y      = Number($('ry').value);
+        const w      = Number($('rw').value);
+        const h      = Number($('rh').value);
         const radius = Number($('rr').value);
-        const hex = $('rcolor').value;
-        const alpha = Number($('ralpha').value);
-        const [r, g, b] = hexToRgb01(hex);
-        const id = renderer.nd_node_create(x, y, w, h, r, g, b, alpha, radius);
+        const hex    = $('rcolor').value;
+        const alpha  = Number($('ralpha').value);
+        const id = addRect(x, y, w, h, hex, alpha, radius);
         nodes.push({ seq: ++nodeSeq, id, x, y, w, h, hex, alpha, radius });
         rebuildList();
         render();
       });
 
       $('clearAllBtn').addEventListener('click', () => {
-        for (const n of nodes) renderer.nd_node_remove(n.id);
+        for (const n of nodes) ctx.nd_node_destroy(n.id);
         nodes.length = 0;
         rebuildList();
         render();
