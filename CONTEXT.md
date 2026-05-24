@@ -49,6 +49,10 @@ _Avoid_: Renderer, Driver
 newdom.h（C ABI）を各言語の FFI 機構でラップしたもの。TypeScript / Python / Swift / Kotlin 等。Binding は薄いラップであり、ロジックを持たない。
 _Avoid_: SDK, Wrapper, Port
 
+**Absolute Layout Tree**:
+ブラウザが HTML/CSS を処理した結果として `getBoundingClientRect()` + `getComputedStyle()` で抽出できる、絶対座標・確定スタイル済みの要素ツリー。CSS エンジンもレイアウトエンジンも不要。この Tree を NewDOM Mutation に変換することが HTML/CSS 互換の実体であり、CSS を実装することではない。
+_Avoid_: Computed Tree, Layout Result, Resolved Tree
+
 **DOM Adapter**:
 NewDOM コア（C ABI）の上に乗る独立した adapter 層（crate: `newdom-dom`）。設計目標はブラウザの DOM と同等の開発者体験を提供すること。`createElement` / `appendChild` / `getElementById` / `querySelector` / `addEventListener` / `dispatchEvent` 等の DOM 互換 API を提供する。プラットフォームのイベントループを所有し（winit 等）、raw input を受け取って `nd_hit_test` で NodeId を解決し、click / focus / blur の合成・バブリングを担う。`element.style` への代入は `nd_begin_frame()` 直前にバッチで `nd_node_update` へ変換する。`createElement(type)` の型文字列は HTML タグ名（`"div"`, `"span"`, `"section"` 等）をそのまま使う。WebGPU 非対応環境での本物の DOM へのフォールバックがタグ名 1:1 で対応できるため。フォーム系要素（`input`, `button`, `select`, `textarea`, `form`）は初版では未サポート。`createTextNode(text)` はコアの `ND_NODE_TEXT` に 1:1 でマップする。実装は Phase 2 から開始し、初版では API の全域を実装せず段階的に拡張するが、設計の北極星はフル DOM 互換である。Binding（薄いラップ）とは明確に異なる。
 _Avoid_: DOM Layer, Web Layer, HTML Adapter（HTML Parser を内包すると誤解される）
