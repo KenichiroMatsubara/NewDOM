@@ -1,5 +1,6 @@
-# NewDOM — GPU-Native UI Rendering Substrate
-## 設計仕様書 v0.1
+# NewDOM — 設計仕様書 v0.2
+
+> **v0.1 との差分**: コア実装言語を C/Zig から Rust に変更。GPU Backend 独自抽象を廃止し wgpu を直接採用。2D レンダラーに Vello を直接採用。各変更の経緯は `docs/adr/` を参照。v0.1 原文は `docs/archive/newdom-spec-v0.1.md`。
 
 ---
 
@@ -12,10 +13,7 @@ NewDOM は言語でもない。
 NewDOM は **描画の共通語** である。
 
 上に何が乗ってもいい。TypeScript でも Python でも Swift でも Kotlin でも、どんな言語の UI フレームワークも NewDOM の上で動く。  
-下に何があってもいい。WebGPU でも Vulkan でも Metal でも DX12 でも、NewDOM はその上に薄く乗る。
-
-HTML/DOM は "document web" を作った。  
-NewDOM は "application layer" の描画インフラを作る。
+下に何があってもいい。WebGPU でも Vulkan でも Metal でも DX12 でも、wgpu がその差異を吸収する。
 
 ---
 
@@ -39,8 +37,7 @@ Paint
 Composite (GPU)
 ```
 
-GPU はスタックの最下層にしかない。  
-アプリケーションロジックから GPU まで、5〜7 層の変換が挟まる。
+GPU はスタックの最下層にしかない。アプリケーションロジックから GPU まで 5〜7 層の変換が挟まる。
 
 ### 1.2 現代アプリが document model と合わない
 
@@ -49,7 +46,7 @@ GPU はスタックの最下層にしかない。
 | IDE / Code Editor | ❌ 大量の行、ミニマップ、オーバーレイ |
 | Infinite Canvas | ❌ document に座標系がない |
 | AI チャット UI | ⚠️ ストリーミングでの DOM 操作コスト |
-| Realtime Collab | ❌ 頻繁な mutation、CRDT との統合が困難 |
+| Realtime Collab | ❌ 頻繁な Mutation、CRDT との統合が困難 |
 | Graph Visualization | ❌ SVG は遅い、Canvas は状態管理を持たない |
 | Game UI / HUD | ❌ reflow が致命的 |
 
@@ -59,11 +56,11 @@ GPU はスタックの最下層にしかない。
 |---|---|
 | Flutter/Impeller | Dart 必須、widget tree に強く依存 |
 | Xilem/Vello | Rust エコシステムに閉じている、Web バインディングが弱い |
-| Makepad | IDE 向けに特化、汎用 substrate ではない |
+| Makepad | IDE 向けに特化、汎用 Substrate ではない |
 | React Native Skia | React に強依存 |
 | Unity/Godot UI | ゲームエンジン前提、Web では重すぎる |
 
-**誰も「言語非依存の汎用 GPU 描画 substrate」を作っていない。**
+**誰も「言語非依存の汎用 GPU 描画 Substrate」を作っていない。**
 
 ---
 
@@ -73,15 +70,14 @@ GPU はスタックの最下層にしかない。
 
 ```
 NewDOM = GPU-Native Retained Scene Graph
-       + Language-Agnostic C ABI
-       + Minimal Layout Engine
+       + Language-Agnostic C ABI  (Phase 1〜)
+       + Optional Layout Engine   (newdom-layout crate)
        + Text/Vector Rendering Pipeline
-       + Platform Backend Abstraction
+       + wgpu Backend
 ```
 
 **NewDOM は描画の "カーネル" である。**  
-OS のカーネルが言語を選ばず、全てのプログラムの下にあるように、  
-NewDOM は UI フレームワークを選ばず、全ての描画の下にある。
+OS のカーネルが言語を選ばず全てのプログラムの下にあるように、NewDOM は UI フレームワークを選ばず全ての描画の下にある。
 
 ### 2.2 What NewDOM IS NOT
 
@@ -101,10 +97,12 @@ NewDOM は UI フレームワークを選ばず、全ての描画の下にある
 ├─────────────────────────────────────────┤
 │                                         │
 │              N E W D O M               │  ← ここ
-│      (C ABI / WASM / FFI で接続)        │
+│    (C ABI / WASM / FFI で接続)          │
 │                                         │
 ├─────────────────────────────────────────┤
-│  WebGPU   Vulkan   Metal   DX12   GL   │  ← GPU バックエンド（何でもよい）
+│        wgpu                             │  ← GPU 抽象（固定）
+├─────────────────────────────────────────┤
+│  WebGPU   Vulkan   Metal   DX12        │  ← GPU バックエンド（wgpu が差異を吸収）
 └─────────────────────────────────────────┘
 ```
 
@@ -112,48 +110,58 @@ NewDOM は UI フレームワークを選ばず、全ての描画の下にある
 
 ## 3. アーキテクチャ
 
-### 3.1 全体構成
+### 3.1 実装言語
+
+**Rust**（ADR-0001）。
+
+wgpu は Rust ネイティブのライブラリであり、Rust で統一することで cargo 一本に収まり、クロスコンパイル・WASM（wasm-pack）・C ABI 生成（cbindgen）が一貫したツールチェーンで完結する。C ABI（newdom.h）は `extern "C"` + cbindgen で生成するため、Binding 側の体験は C/Zig 実装と変わらない。
+
+### 3.2 全体構成
 
 ```
 ┌──────────────────────────────────────────────────────┐
 │                    LANGUAGE BINDINGS                  │
 │  TypeScript  │  Python  │  Swift  │  Kotlin  │  C++  │
 └──────────────────────┬───────────────────────────────┘
-                       │  C ABI (newdom.h)
+                       │  C ABI (newdom.h)  ← Phase 1〜
 ┌──────────────────────▼───────────────────────────────┐
-│                     CORE (C / Zig)                    │
+│                  CORE (Rust)                          │
 │                                                       │
-│  ┌────────────┐  ┌───────────────┐  ┌─────────────┐ │
-│  │ Scene Graph│  │ Layout Engine │  │   Text      │ │
-│  │  (Retained)│  │(Flex/Grid/    │  │  Engine     │ │
-│  │            │  │ Constraint)   │  │(shaping/IME)│ │
-│  └─────┬──────┘  └───────┬───────┘  └──────┬──────┘ │
-│        └─────────────────┴──────────────────┘        │
-│                          │                            │
-│              ┌───────────▼──────────┐                │
-│              │   Render Command     │                │
-│              │   Encoder            │                │
-│              └───────────┬──────────┘                │
-└──────────────────────────┼───────────────────────────┘
-                           │
-┌──────────────────────────▼───────────────────────────┐
-│                  BACKEND ABSTRACTION                  │
-│   WebGPU  │  Vulkan  │  Metal  │  DX12  │  OpenGL   │
+│  ┌────────────────┐  ┌─────────────────┐             │
+│  │  Scene Graph   │  │  newdom-layout  │ (optional)  │
+│  │  (newdom-core) │  │  Taffy / Flex   │             │
+│  └───────┬────────┘  └────────┬────────┘             │
+│          └──────────────┬─────┘                      │
+│                         │  Mutation                  │
+│          ┌──────────────▼──────────────┐             │
+│          │  SceneGraph → Vello Scene   │             │
+│          │  (薄い変換レイヤー)          │             │
+│          └──────────────┬──────────────┘             │
+└─────────────────────────┼────────────────────────────┘
+                          │
+┌─────────────────────────▼────────────────────────────┐
+│                    Vello  (vendored)                  │
+│     GPU compute 2D renderer (wgpu ベース)             │
+└─────────────────────────┬────────────────────────────┘
+                          │
+┌─────────────────────────▼────────────────────────────┐
+│                    wgpu                               │
+│   WebGPU (WASM)  │  Vulkan  │  Metal  │  DX12        │
 └──────────────────────────────────────────────────────┘
 ```
 
-### 3.2 コアの実装言語
+### 3.3 crate 構成
 
-**C または Zig** で実装する。
+| crate | 役割 |
+|---|---|
+| `newdom-core` | Scene Graph（NodeId, NodeKind, SceneGraph）。wasm-bindgen 依存なし |
+| `newdom-wasm` | WASM バインディング。wasm-bindgen + wgpu + Vello。`NdContext` が SceneGraph と GPU 状態を所有 |
+| `newdom-layout` | Taffy による Layout Engine（optional）。Phase 1〜 |
+| `newdom-dom` | DOM Adapter（`createElement` / `addEventListener` 等）。Phase 2〜 |
 
-理由：
-- C ABI を自然に持つ
-- FFI コストが最小
-- WASM にコンパイル可能
-- あらゆる言語からバインディングを生成できる
-- Rust より学習コストが低く、コントリビュータを集めやすい
+### 3.4 スレッドモデル
 
-> 参考：SQLite は C で書かれているから全言語から使える。NewDOM も同じ戦略を取る。
+シングルスレッド（ADR-0003）。wgpu の `!Send` 型と WASM 環境の制約により、Phase 0 はシングルスレッドで設計する。`NdContext` は `!Send + !Sync`。レンダースレッド分離は API 安定後の将来 ADR として予約。
 
 ---
 
@@ -161,436 +169,221 @@ NewDOM は UI フレームワークを選ばず、全ての描画の下にある
 
 ### 4.1 Node 型
 
-NewDOM の Scene Graph は以下の Node 型のみで構成される。  
-DOM の `div/span/p` ではなく、GPU が直接理解できる型。
+NewDOM の Scene Graph は GPU が直接理解できる型のみで構成される。
 
-```c
-typedef enum NdNodeKind {
-    ND_NODE_CONTAINER,   // 子を持つコンテナ（transform, clip 付き）
-    ND_NODE_RECT,        // 矩形（角丸、グラデーション、影）
-    ND_NODE_TEXT,        // テキスト（shaping 済み）
-    ND_NODE_IMAGE,       // ビットマップ / テクスチャ
-    ND_NODE_PATH,        // ベクターパス（SVG 相当）
-    ND_NODE_CANVAS,      // 即時描画領域（escape hatch）
-    ND_NODE_SURFACE,     // 別 GPU テクスチャへの描画ターゲット
-    ND_NODE_LAYER,       // GPU レイヤー（合成、opacity、blend mode）
-    ND_NODE_HIT_REGION,  // イベント検出領域（描画なし）
-} NdNodeKind;
+```rust
+pub enum NodeKind {
+    // Phase 0
+    Rect { x: f32, y: f32, width: f32, height: f32, color: [f32; 4] },
+
+    // Phase 1〜
+    // Text   { text_id: TextId, ... }
+    // Image  { image_id: ImageId, fit: ImageFit }
+    // Path   { ... }
+    // Container { ... }
+    // Layer  { opacity: f32, blend_mode: BlendMode }
+    // HitRegion { ... }
+}
 ```
 
-### 4.2 Node の基本構造
+### 4.2 NodeId
 
-```c
-typedef struct NdNode {
-    uint64_t    id;           // 一意 ID（上層が管理）
-    NdNodeKind  kind;
-    NdTransform transform;    // 2D affine transform
-    NdRect      clip;         // クリッピング矩形
-    float       opacity;
-    NdBlendMode blend_mode;
-    bool        visible;
-    uint32_t    child_count;
-    uint64_t*   children;     // 子 Node ID の配列
-} NdNode;
-```
+`slotmap::DefaultKey`（generational arena）。削除済み Node への誤 update は generational check で検出され、UB ではなく安全に無視される。C ABI では `uint64_t` として公開する（Phase 1〜）。
 
 ### 4.3 Retained Graph の更新モデル
 
 ```
-初回: nd_node_create(id, kind, props)
-更新: nd_node_update(id, changed_props)   // 変更分のみ
+初回: nd_node_create(kind) -> NodeId
+更新: nd_node_update(id, changed_props)  // 変更分のみ
 削除: nd_node_destroy(id)
-移動: nd_node_reparent(id, new_parent_id)
+移動: nd_node_set_parent(id, parent_id)
 ```
 
-**NewDOM は差分のみ受け取る。** フレームワーク側が何を変えたかを知らせる。  
-NewDOM は変更を GPU Scene Graph に反映し、影響を受けた部分のみ再描画する。
+NewDOM は Mutation を受け取るだけで、状態変化を自ら検知しない。
 
 ---
 
-## 5. Layout Engine
+## 5. 描画パイプライン
 
-### 5.1 対応レイアウトモード
-
-CSS 全互換は **目指さない**。代わりに実用的な 5 モードを GPU-native で再設計する。
-
-| モード | 概要 | 参考 |
-|---|---|---|
-| `FLEX` | Flexbox 相当（主軸/交差軸） | CSS Flexbox |
-| `GRID` | 固定・可変グリッド | CSS Grid のサブセット |
-| `CONSTRAINT` | 相対位置拘束（anchor ベース） | SwiftUI / Figma |
-| `ABSOLUTE` | 絶対座標 | CSS position:absolute |
-| `CANVAS` | 座標系なし（infinity scroll 等） | ゲームエンジン方式 |
-
-### 5.2 Layout の分離原則
-
-Layout は **CPU で計算し、結果を GPU に送る**。  
-GPU で layout 計算は行わない（依存グラフが複雑になるため）。
+### 5.1 フレームループ
 
 ```
-Layout Inputs (CPU)
-  → Constraint Solver
-  → Computed Rects
-  → Scene Graph へ transform として書き込む
-  → GPU は transform を受け取るだけ
+1. nd_begin_frame()
+   └── Mutation 受付開始
+
+2. nd_node_update() × N
+   └── Scene Graph を更新
+
+3. nd_end_frame()
+   └── SceneGraph → Vello Scene 変換（薄い変換レイヤー）
+   └── Vello: GPU compute shader で path rendering
+   └── 中間テクスチャ (Rgba8Unorm) → surface blit
+   └── surface.present()
 ```
 
-### 5.3 Incremental Layout
+### 5.2 SceneGraph → Vello Scene 変換レイヤー
 
-変更されたノードから上位に向かって dirty flag を伝播。  
-再計算は dirty なサブツリーのみ。
+Vello の API 変更を NewDOM コアから隔離するための薄いレイヤー（ADR-0006）。
 
-```
-node_A (dirty) → parent_B (dirty) → root (dirty)
-node_C (clean) → (計算スキップ)
-```
-
----
-
-## 6. Rendering Pipeline
-
-### 6.1 フレームループ
-
-```
-1. Invalidation Collection
-   └── 上層から届いた node update を集積
-
-2. Layout Pass (CPU)
-   └── dirty node のみ再計算
-
-3. Scene Graph Traversal (CPU)
-   └── visible node を前から後ろへ走査
-   └── Render Command を生成
-
-4. GPU Upload
-   └── 変更のあった geometry / texture のみ転送
-
-5. GPU Render Pass
-   └── Retained Draw Call を実行
-   └── 変更のある Layer のみ再描画
-
-6. Composite
-   └── Layer を合成して最終フレームを出力
-```
-
-### 6.2 Render Command
-
-GPU に送る命令は全て Command として直列化する。  
-これにより backend を差し替えられる。
-
-```c
-typedef enum NdCmd {
-    ND_CMD_DRAW_RECT,
-    ND_CMD_DRAW_PATH,
-    ND_CMD_DRAW_TEXT,
-    ND_CMD_DRAW_IMAGE,
-    ND_CMD_PUSH_LAYER,
-    ND_CMD_POP_LAYER,
-    ND_CMD_PUSH_CLIP,
-    ND_CMD_POP_CLIP,
-    ND_CMD_SET_TRANSFORM,
-} NdCmd;
-```
-
-### 6.3 Partial Invalidation（差分描画）
-
-全画面再描画は行わない。変更した Node に対応する **Dirty Region** のみ再描画。
-
-```
-Frame N:   [=====AAAAA=====BBBBB=====]
-Frame N+1: [=====AAAAA=====BBBBB=====]
-                  ↑ ここだけ変化
-→ Dirty Region: A のみ再描画
-→ B は GPU Texture をそのまま再利用
-```
-
----
-
-## 7. Text Engine
-
-### 7.1 設計方針
-
-テキストレンダリングは NewDOM 最大の難関。  
-**Harfbuzz** (shaping) + **FreeType / CoreText / DirectWrite** (rasterize) + **Vello 方式の GPU atlas** を採用。
-
-### 7.2 パイプライン
-
-```
-Input: UTF-8 string + Font + Size + Lang
-
-  ↓ Unicode Segmentation（書記素クラスタ分割）
-  ↓ Bidi Algorithm（RTL/LTR 混在対応）
-  ↓ Harfbuzz Shaping（ligature、kerning、GPOS/GSUB）
-  ↓ Font Fallback（絵文字、CJK、記号の自動フォント切替）
-  ↓ Glyph Rasterization（GPU テクスチャアトラスにキャッシュ）
-  ↓ Layout（行折り返し、alignment）
-  ↓ GPU Draw Call（アトラスから UV 座標で描画）
-```
-
-### 7.3 対応機能
-
-| 機能 | 実装方法 |
-|---|---|
-| Latin / CJK / Arabic | Unicode + Bidi Algorithm |
-| 絵文字 | CBDT/SBIX/COLR フォント対応 |
-| Ligature / Kerning | Harfbuzz |
-| IME（入力途中） | Underline overlay node |
-| Selection | Glyph 単位の hit-test |
-| Font Fallback | Fontique 相当の fallback chain |
-| Variable Font | OpenType fvar / gvar |
-
-### 7.4 Glyph Atlas
-
-```
-GPU テクスチャアトラス（2048x2048 等）
-┌────────────────────────────────┐
-│ aaaa bbbb cccc dddd eeee ffff  │
-│ gggg hhhh iiii jjjj kkkk llll  │
-│ [emoji] [CJK] [Arabic] ...     │
-└────────────────────────────────┘
-→ Glyph は UV 座標でアドレス指定
-→ LRU でエビクション
-→ サイズ変更時はサブピクセルレンダリングの再キャッシュ
-```
-
----
-
-## 8. Reactivity Interface
-
-### 8.1 NewDOM 自身は状態を持たない
-
-Signal でも Observable でも ECS でも Redux でも、何でも接続できる。  
-NewDOM が提供するのは **invalidation API** のみ。
-
-```c
-// 上層フレームワークが呼ぶ
-nd_begin_frame(ctx);
-  nd_node_update(ctx, node_id, &props);  // 変化した node を通知
-  nd_node_update(ctx, node_id2, &props2);
-nd_end_frame(ctx);                       // ここで描画が走る
-```
-
-### 8.2 フレームワーク側の責務
-
-```
-Framework（React / Solid / 自作）
-   ↓
-State 変化を検知（Signal / VDOM diff / ECS query）
-   ↓
-変化した Node の新しい props を計算
-   ↓
-nd_node_update() を呼ぶ
-   ↓
-NewDOM が差分描画
-```
-
-### 8.3 接続パターン例
-
-**Signal ベース（Solid.js 的）:**
-```typescript
-// TS バインディング例
-const x = signal(100);
-
-effect(() => {
-  nd.updateNode(rectId, { x: x.value, width: 200 });
-});
-```
-
-**VDOM ベース（React 的）:**
-```typescript
-// Reconciler が diff を取り、変化分を nd.updateNode に流す
-reconcile(prevTree, nextTree, (id, patch) => nd.updateNode(id, patch));
-```
-
-**ECS ベース（ゲームエンジン的）:**
 ```rust
-// ECS が transform component の変化を検知して通知
-for (entity, transform) in changed_transforms.iter() {
-    nd_node_update(ctx, entity.id, &transform.into());
-}
+fn build_vello_scene(graph: &SceneGraph) -> vello::Scene { ... }
 ```
+
+Scene Graph を深さ優先で走査し、NodeKind に対応する Vello プリミティブへ変換する。この関数のみが Vello の型に触れる。
+
+### 5.3 Dirty Region
+
+Phase 0 では全画面再描画を許容する。Dirty Region による部分再描画は Phase 1 以降の最適化。ただし retained Scene Graph により text shaping / layout 計算 / glyph atlas は常にキャッシュされる。
 
 ---
 
-## 9. Platform Backend
+## 6. GPU Backend
 
-### 9.1 Backend 抽象層
+wgpu を唯一の Backend として使用する（ADR-0002）。独自の `NdBackend` trait は持たない。
 
-```c
-typedef struct NdBackend {
-    void* (*create_buffer)(size_t size, NdBufferUsage usage);
-    void  (*upload_buffer)(void* buf, void* data, size_t size);
-    void* (*create_texture)(uint32_t w, uint32_t h, NdPixelFormat fmt);
-    void  (*begin_render_pass)(NdRenderPassDesc* desc);
-    void  (*draw)(NdDrawCall* call);
-    void  (*end_render_pass)(void);
-    void  (*present)(void);
-} NdBackend;
-```
+wgpu がプラットフォーム対応を担う：
 
-上の構造体を実装すれば、どんな GPU API も NewDOM に接続できる。
+| 環境 | wgpu backend |
+|---|---|
+| Web (WASM) | ブラウザ WebGPU |
+| Android | Vulkan |
+| iOS / macOS | Metal |
+| Windows | DX12 / Vulkan |
+| Linux | Vulkan |
 
-### 9.2 対応バックエンド
-
-| バックエンド | プラットフォーム | 優先度 |
-|---|---|---|
-| WebGPU (via Dawn) | Web, Native | ★★★ 最優先 |
-| Vulkan | Linux, Android, Windows | ★★★ |
-| Metal | macOS, iOS | ★★★ |
-| DX12 | Windows | ★★ |
-| OpenGL 3.3+ | Fallback | ★ |
-| Software (CPU) | テスト用 | ★ |
-
-### 9.3 WebGPU の扱い
-
-Web では **WASM + WebGPU** がメインターゲット。
-
-```
-Rust/C で書かれた NewDOM core
-  ↓ wasm-pack / emscripten でコンパイル
-WASM モジュール (newdom.wasm)
-  ↓ JavaScript から import
-TypeScript / JavaScript で newdom を操作
-  ↓ WebGPU バックエンドが描画
-```
-
-ブラウザが WebGPU 非対応の場合は WebGL2 fallback。
+WebGPU 仕様で露出されない低レベル最適化が将来必要になった場合、NewDOM コアを変更せず外部拡張として NewDOM の外側に接続する方針（ADR-0002 Consequences）。
 
 ---
 
-## 10. C ABI / バインディング戦略
+## 7. テキストエンジン
 
-### 10.1 公開 API（newdom.h）
+Linebender スタック（ADR-0005）。Vello と同チーム設計で自然に統合される。
+
+| crate | 役割 |
+|---|---|
+| `parley` | text layout（行折り返し、alignment、paragraph） |
+| `fontique` | font management（fallback chain、font enumeration） |
+| `skrifa` | font parsing（OpenType）|
+
+テキストレンダリングは Phase 1 以降。Phase 0 のスコープ外。
+
+---
+
+## 8. Layout Engine（Optional Module）
+
+`newdom-layout` crate として `newdom-core` から分離する（ADR-0008）。
+
+Layout Engine は最終的に `nd_node_update(id, { x, y, width, height })` を呼ぶ producer の一種であり、NewDOM コアから見れば通常の Mutation と区別がない。
+
+- **Taffy**（Pure Rust）を採用（ADR-0004）。Flexbox + CSS Grid + Block layout をサポート
+- `newdom-core` は Taffy を import しない
+- Layout を使わないユーザー（ゲーム HUD・Infinite Canvas 等）は `newdom-layout` を依存に含めなくてよい
+
+---
+
+## 9. C ABI / バインディング戦略（Phase 1〜）
+
+Phase 0 では WASM + wasm-bindgen が唯一の公開 API。C ABI は Phase 1 以降。
+
+### 9.1 公開 API（newdom.h、Phase 1〜）
 
 ```c
-// --- Context ---
 NdCtx*   nd_create(NdConfig* config);
 void     nd_destroy(NdCtx* ctx);
 
-// --- Scene Graph ---
 NdNodeId nd_node_create(NdCtx* ctx, NdNodeKind kind);
 void     nd_node_destroy(NdCtx* ctx, NdNodeId id);
 void     nd_node_set_parent(NdCtx* ctx, NdNodeId id, NdNodeId parent);
 void     nd_node_update(NdCtx* ctx, NdNodeId id, NdNodeProps* props);
 
-// --- Frame ---
 void     nd_begin_frame(NdCtx* ctx);
-void     nd_end_frame(NdCtx* ctx);   // ここで GPU に流れる
+void     nd_end_frame(NdCtx* ctx);
 
-// --- Text ---
-NdTextId nd_text_shape(NdCtx* ctx, NdTextDesc* desc);
-void     nd_text_destroy(NdCtx* ctx, NdTextId id);
-
-// --- Events ---
 NdNodeId nd_hit_test(NdCtx* ctx, float x, float y);
-
-// --- Image ---
-NdImageId nd_image_upload(NdCtx* ctx, void* data, uint32_t w, uint32_t h, NdPixelFormat fmt);
-void      nd_image_destroy(NdCtx* ctx, NdImageId id);
 ```
 
-### 10.2 言語バインディング戦略
+C ABI は `extern "C"` + cbindgen で生成する。Binding は薄いラップであり、ロジックを持たない。
 
-**生成ではなく薄いラップ**。`newdom.h` の C ABI を各言語の FFI 機構で呼ぶ。
-
-| 言語 | 接続方法 |
-|---|---|
-| TypeScript / JS | WASM exports / Emscripten bindings |
-| Python | ctypes / cffi |
-| Swift | Swift C interop |
-| Kotlin / JVM | JNA / JNI |
-| C++ | ヘッダー直接 include |
-| Rust | bindgen から生成した raw bindings |
-| Go | CGo |
-| C# | P/Invoke |
-
-### 10.3 TypeScript バインディング例
+### 9.2 WASM API（Phase 0 実装済み・拡張中）
 
 ```typescript
-// newdom.ts
-import init, { NdContext } from "./newdom.wasm";
+const ctx = await NdContext.init(canvas);
 
-const nd = await init();
-const ctx = nd.createContext({ backend: "webgpu", canvas });
+const rectId = ctx.nd_node_create("rect");
+ctx.nd_node_update(rectId, { x: 10, y: 10, width: 200, height: 100, r: 0.2, g: 0.5, b: 1.0, a: 1.0 });
 
-const root = nd.createNode(ctx, "container");
-const rect  = nd.createNode(ctx, "rect");
-nd.setParent(ctx, rect, root);
-
-nd.beginFrame(ctx);
-  nd.updateNode(ctx, rect, {
-    x: 10, y: 10, width: 200, height: 100,
-    fill: { type: "solid", color: "#3b82f6" },
-    cornerRadius: 8,
-  });
-nd.endFrame(ctx);
+ctx.nd_begin_frame();
+ctx.nd_end_frame();
 ```
 
 ---
 
-## 11. 盗める/参考にすべき先行技術
+## 10. DOM Adapter（Phase 2〜）
 
-> パクれるものは全部パクる。新規発明は最小限に。
+`newdom-dom` crate として NewDOM コアの上に乗る独立した adapter 層。
 
-| コンポーネント | 参考元 | 何を盗むか |
+- `createElement` / `appendChild` / `getElementById` / `querySelector` / `addEventListener` / `dispatchEvent` 等の DOM 互換 API
+- 型文字列は HTML タグ名（`"div"`, `"span"` 等）をそのまま使う。WebGPU 非対応環境での本物の DOM へのフォールバックがタグ名 1:1 で対応できるため（ADR-0009）
+- フォーム系要素（`input`, `button`, `select`, `textarea`, `form`）は初版では未サポート
+- Binding（薄いラップ）とは明確に異なる
+
+---
+
+## 11. 依存管理
+
+主要依存は workspace 内にベンダリングし upstream から自律する（ADR-0007）。
+
+| crate | ベンダー場所 | 理由 |
 |---|---|---|
-| GPU Vector Renderer | **Vello** (Linebender) | GPU compute shader による 2D path rendering アルゴリズム |
-| Text Shaping | **Harfbuzz** | そのまま組み込む（C ライブラリ）|
-| Font System | **Fontique** (Linebender) | fallback chain、font enumeration |
-| Scene Graph | **Flutter/Impeller** | Retained layer tree の設計 |
-| Layout | **Yoga** (Meta) | Flexbox 実装をそのまま利用（MIT ライセンス）|
-| WASM Bridge | **wgpu / Dawn** | WebGPU backend |
-| Glyph Atlas | **cosmic-text** | GPU アトラス管理 |
-| Constraint Layout | **Cassowary** | Constraint solver アルゴリズム |
-| Dirty Tracking | **Slint** | Incremental repaint の設計 |
+| vello / vello_encoding / vello_shaders | `crates/vendor/vello` 等 | 描画パイプラインの核心 |
+| taffy | `crates/vendor/taffy` | レイアウト計算の核心 |
+| parley / fontique / skrifa | `crates/vendor/parley` 等 | テキストスタックの核心 |
+
+wgpu は対象外。巨大すぎ、プラットフォーム対応の追従コストが高い。Cargo.toml 依存として維持し、メジャーバージョンで評価して移行する。
 
 ---
 
 ## 12. ロードマップ
 
-### Phase 0 — Prototype（3ヶ月）
+### Phase 0 — Prototype（現在）
 
-目標：WebGPU + WASM で矩形とテキストが描けること
+目標：**ブラウザの canvas に wgpu + Vello で NodeId 経由の色付き矩形が描画される**
 
-- [ ] C コアの骨格（Scene Graph, Node CRUD）
-- [ ] WebGPU バックエンド（WASM）
-- [ ] 矩形描画（fill, stroke, cornerRadius）
-- [ ] Harfbuzz 統合（Latin テキスト）
-- [ ] TypeScript バインディング（最小限）
-- [ ] ブラウザ上でのデモ
+- [x] Rust workspace 構成（newdom-core / newdom-wasm）
+- [x] wgpu + Vello 初期化（WASM）
+- [x] nd_clear（単色塗りつぶし）
+- [ ] SceneGraph → Vello Scene 変換レイヤー
+- [ ] wasm-bindgen 公開 API（`NdContext`、Node CRUD、begin/end frame）
+- [ ] ブラウザデモ（矩形を Node 経由で描画）
 
-### Phase 1 — Usable（6ヶ月）
+### Phase 1 — Usable
 
-目標：実際の UI が作れること
+目標：実際の UI が作れる
 
-- [ ] Flex レイアウト（Yoga 統合）
+- [ ] C ABI（newdom.h / cbindgen）
+- [ ] Flex レイアウト（newdom-layout / Taffy）
+- [ ] テキスト描画（Parley + Vello glyph rendering）
 - [ ] 画像描画
-- [ ] ベクターパス
-- [ ] Hit testing / イベント領域
-- [ ] Vulkan バックエンド（Linux/Android）
-- [ ] Metal バックエンド（macOS/iOS）
-- [ ] Python バインディング
+- [ ] Hit testing（nd_hit_test）
+- [ ] Dirty Region 部分再描画
+- [ ] Vulkan / Metal ネイティブビルド
 
-### Phase 2 — Ecosystem（12ヶ月）
+### Phase 2 — Ecosystem
 
-目標：フレームワークが NewDOM の上に乗れること
+目標：フレームワークが NewDOM の上に乗れる
 
-- [ ] **DOM Adapter 初版**（`newdom-dom` crate）— `createElement` / `appendChild` / `getElementById` / `addEventListener` / イベント合成・バブリング
-- [ ] CJK / Bidi テキスト
-- [ ] IME サポート
-- [ ] Constraint レイアウト
+- [ ] DOM Adapter 初版（newdom-dom crate）
+- [ ] CJK / Bidi テキスト・IME
 - [ ] Layer compositing（opacity, blend mode, shadow）
 - [ ] Animation primitive（tween, spring）
 - [ ] Accessibility tree export（AX API / AT-SPI）
-- [ ] DX12 バックエンド
-- [ ] Reference framework 実装（TypeScript で薄い React-like）
+- [ ] Python / Swift / Kotlin Bindings
 
-### Phase 3 — Production（18ヶ月〜）
+### Phase 3 — Production
 
-- [ ] OpenGL fallback
-- [ ] Performance profiler / DevTools
-- [ ] Variable font
-- [ ] 絵文字完全対応
+- [ ] Constraint レイアウト
+- [ ] Variable font / 絵文字完全対応
+- [ ] DevTools / Performance profiler
 - [ ] WebAssembly Component Model 対応
 
 ---
@@ -604,126 +397,48 @@ nd.endFrame(ctx);
 | 状態管理 | 上層の仕事 |
 | コンポーネントシステム | 上層の仕事 |
 | ルーティング | 上層の仕事 |
-| アクセシビリティの完全対応 | Phase 2 以降。初期は AX tree の export API のみ提供 |
+| アクセシビリティの完全対応 | Phase 2 以降。初期は AX tree の export API のみ |
 | サーバーサイドレンダリング | SVG/PDF エクスポートとして別途検討 |
+| 独自 GPU Backend 抽象 | wgpu がその役割を担う（ADR-0002） |
+| 独自 GPU compute path renderer | Vello がその役割を担う（ADR-0006） |
 
 ---
 
-## 14. 設計上のトレードオフ
+## Appendix A — Node Props（Phase 0 実装範囲）
 
-### 14.1 C vs Zig
-
-| | C | Zig |
-|---|---|---|
-| FFI 互換性 | ◎ | ◎ |
-| 安全性 | △ | ○（comptime, 明示的アロケータ）|
-| WASM | ◎ | ◎ |
-| エコシステム | ◎ | △（まだ若い）|
-| **判断** | 初期は C。Zig への移行は後続判断。 |
-
-### 14.2 Retained vs Immediate
-
-Immediate mode（Dear ImGui 方式）は **採用しない**。
-
-理由：
-- 毎フレーム全 node を CPU で走査するコストが高い
-- アニメーション・トランジションの管理が困難
-- テキストの shaping キャッシュが効かない
-
-Retained mode を採用し、差分更新で上位の利便性と下位の効率を両立する。
-
-### 14.3 Shader の管理
-
-各バックエンドで shader を別に書くのは現実的でない。  
-**WGSL（WebGPU Shading Language）を正とし、他バックエンドへはトランスパイル**する。
-
-```
-WGSL（マスター）
-  ↓ naga（wgpu のシェーダーコンパイラ）
-Vulkan SPIR-V / Metal MSL / HLSL / GLSL
+```rust
+// Phase 0: Rect のみ
+pub enum NodeKind {
+    Rect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: [f32; 4],  // RGBA, 0.0–1.0
+    },
+}
 ```
 
----
-
-## 15. 参考資料
-
-| 資料 | URL |
-|---|---|
-| Vello (GPU 2D renderer) | https://github.com/linebender/vello |
-| Xilem (Rust UI framework) | https://github.com/linebender/xilem |
-| Harfbuzz | https://harfbuzz.github.io |
-| Yoga (Flexbox) | https://yogalayout.dev |
-| wgpu (WebGPU in Rust) | https://wgpu.rs |
-| cosmic-text | https://github.com/pop-os/cosmic-text |
-| Cassowary (Constraint) | https://overconstrained.io |
-| Flutter Impeller 設計 | https://github.com/flutter/flutter/wiki/Impeller |
-| WebGPU Spec | https://gpuweb.github.io/gpuweb |
+将来の props（Phase 1〜）は `corner_radius`, `stroke`, `opacity`, `blend_mode`, `shadow`, `filter` 等を追加予定。
 
 ---
 
-## Appendix A — Node Props 詳細
-
-```c
-typedef struct NdNodeProps {
-    // Geometry
-    float x, y, width, height;
-
-    // Transform
-    float rotate;       // degrees
-    float scale_x, scale_y;
-    float anchor_x, anchor_y; // 0.0 ~ 1.0
-
-    // Rect
-    float corner_radius[4];   // TL, TR, BR, BL
-    NdBrush fill;
-    NdStroke stroke;
-
-    // Layer
-    float opacity;
-    NdBlendMode blend_mode;
-    NdShadow shadow;
-    NdFilter filter;       // blur, etc.
-
-    // Text
-    NdTextId text_id;      // nd_text_shape() の結果
-
-    // Image
-    NdImageId image_id;
-    NdImageFit fit;        // cover, contain, fill, none
-
-    // Clip
-    bool clip_children;
-    float clip_radius[4];
-
-    // Visibility
-    bool visible;
-    NdPointerEvents pointer_events; // auto, none
-
-    // Layout
-    NdLayoutMode layout_mode;
-    NdFlexProps flex;
-    NdGridProps grid;
-} NdNodeProps;
-```
-
----
-
-## Appendix B — エラー設計
+## Appendix B — エラー設計（Phase 1〜 C ABI 向け）
 
 ```c
 typedef enum NdError {
     ND_OK              = 0,
-    ND_ERR_INVALID_ID  = 1,   // 存在しない node ID
+    ND_ERR_INVALID_ID  = 1,   // 存在しない NodeId
     ND_ERR_GPU         = 2,   // GPU エラー（VRAM 不足等）
     ND_ERR_OOM         = 3,   // メモリ不足
     ND_ERR_TEXT        = 4,   // text shaping 失敗
     ND_ERR_BACKEND     = 5,   // backend 未初期化
 } NdError;
-
-// 全 API は NdError を返す。失敗時は nd_last_error() で詳細取得。
 ```
+
+WASM API では `Result<T, JsValue>` として Rust のエラーをそのまま JS に伝播する。
 
 ---
 
-*NewDOM Specification v0.1 — 2026*  
+*NewDOM Specification v0.2 — 2026*  
 *"Document web は HTML が作った。Application web は NewDOM が作る。"*
