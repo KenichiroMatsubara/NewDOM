@@ -1,0 +1,13 @@
+[package]
+name = "newdom-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+taffy.workspace = true
+parley.workspace = true
+fontique.workspace = true
+slotmap.workspace = true
+anyhow.workspace = true
+log.workspace = true
