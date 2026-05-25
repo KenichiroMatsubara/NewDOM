@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "crates/newdom-core",
-    "crates/newdom-wasm",
+    "crates/core",
+    "crates/adapters/web",
 ]
 resolver = "2"
 

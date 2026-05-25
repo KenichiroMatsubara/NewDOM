@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 
-use newdom_core::{
+use hayate_core::{
     Node, NodeKind, SceneGraph,
     vello_bridge,
 };
@@ -61,7 +61,7 @@ impl NdRenderer {
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("newdom"),
+                label: Some("hayate"),
                 ..Default::default()
             })
             .await
@@ -77,7 +77,7 @@ impl NdRenderer {
 
         // Vello renders into an intermediate Rgba8Unorm texture, then we blit to the surface.
         let target_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("newdom_vello_target"),
+            label: Some("hayate_vello_target"),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
@@ -101,7 +101,7 @@ impl NdRenderer {
 
         let blitter = TextureBlitter::new(&device, surface_format);
 
-        log::info!("NewDOM renderer initialised ({width}x{height}, format={surface_format:?})");
+        log::info!("Hayate renderer initialised ({width}x{height}, format={surface_format:?})");
 
         Ok(NdRenderer {
             device,
@@ -140,7 +140,7 @@ impl NdRenderer {
 
     /// Remove a node previously created with nd_node_create.
     pub fn nd_node_remove(&mut self, raw_id: f64) {
-        use newdom_core::node::NodeId;
+        use hayate_core::node::NodeId;
         let key_data = KeyData::from_ffi(raw_id as u64);
         let id = NodeId::from(key_data);
         self.scene_graph.remove(id);
@@ -206,7 +206,7 @@ impl NdRenderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("newdom_blit"),
+                label: Some("hayate_blit"),
             });
         self.blitter
             .copy(&self.device, &mut encoder, &self.target_view, &surface_view);

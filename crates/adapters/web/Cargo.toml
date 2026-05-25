@@ -1,5 +1,5 @@
 [package]
-name = "newdom-wasm"
+name = "hayate-adapter-web"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-newdom-core = { path = "../newdom-core" }
+hayate-core = { path = "../../core" }
 wgpu.workspace = true
 vello.workspace = true
 slotmap.workspace = true
