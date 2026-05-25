@@ -2,15 +2,16 @@
 
 ## Context
 
-Hayate の Web 実装（`hayate-adapter-web`）において IME 入力をどう扱うかを決定する必要がある。
+Hayate の Web 実装（`hayate-adapter-web`）において IME 入力とレンダリングモードをどう扱うかを決定する必要がある。
 
 当初は不可視 `<textarea>` + `compositionEvent` を Platform Adapter の内部実装として使用する方針だった（技術的負債として認識済み）。
 
 ## Decision
 
-- **Canvas Mode**（EditContext 対応ブラウザ = Chromium 系）: EditContext API のみを使用する。不可視 textarea は一切置かない
-- **HTML Mode**（EditContext 非対応ブラウザ）: Hayate element tree を HTML にマッピングし、IME はブラウザ native に委ねる
-- EditContext API を永続的にサポートしないブラウザへの Canvas Mode 対応は行わない
+- **Canvas Mode** の条件: WebGPU（`navigator.gpu`）と EditContext API の両方が利用可能な場合。Vello + wgpu で GPU 描画し、IME に EditContext API を使用する
+- **HTML Mode** の条件: WebGPU または EditContext API のいずれかが利用できない場合。element tree を HTML にマッピングし、IME はブラウザ native に委ねる
+- モード選択はランタイム自動検出。アプリ側はモードを意識しない
+- Canvas Mode を永続的にサポートしないブラウザへの対応は行わない
 
 ## Considered Options
 
