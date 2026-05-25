@@ -7,7 +7,7 @@ Hayate は UI フレームワークではない。状態管理でもない。Rec
 
 Hayate が提供するのは、Element Layer（element tree + CSS 風スタイル解決）と Raw Layer（絶対座標・GPUプリミティブ）の二層 WIT インターフェースである。上位層は Element Layer に element を作成し・スタイルを設定し・ツリーを組み立てる。Hayate 内部でレイアウト計算とスタイル解決を行い、Raw Layer のコマンド列に変換して GPU に送る。
 
-DOM 互換は設計目標に含まない。
+DOM 互換は設計目標に含まない。具体的には：DOM Adapter（WebGPU→DOM フォールバック描画パス）を廃止し、HTML タグ名語彙（`div`/`span`/`p` 等）を採用しない。描画・レイアウト・イベントパイプラインは一切 DOM を経由しない。
 
 ## Language
 
