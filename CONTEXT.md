@@ -50,6 +50,10 @@ _Avoid_: Runtime, Host, Surface Adapter
 `hayate-adapter-web` の動作モードの一つ。WebGPU または EditContext API のいずれかが利用できない場合に自動選択される。Element Layer → Taffy → Raw Layer という `hayate-core` の統一パイプラインを通り、Raw Layer の絶対座標出力を absolutely-positioned な HTML 要素（`div` 等）にマッピングして描画する。Canvas Mode と同一のコードパスを経由し、最終的な描画先だけが異なる（DOM vs GPU）。IME はブラウザ native の動作に委ねる。モード選択はランタイム自動検出で行い、アプリ側は意識しない。
 _Avoid_: フォールバック（劣化の含意を避けるため）、DOM Mode、native CSS モード
 
+**Interaction Event**:
+ポインタやキーボード操作に起因する要素単位のイベント。`hover-enter` / `hover-leave` / `focus` / `blur` / `active-start` / `active-end` 等を含み、`poll-events()` で上位層に通知される。Hayate はイベントを通知するだけであり、インタラクション状態に応じたスタイル切り替えは上位層（Hayabusa の Signal / Effect）の責務。Hayate は「ホバー中スタイル」という概念を持たない。
+_Avoid_: :hover スタイル、状態付きスタイル、CSS 擬似クラス
+
 **Signal**:
 Hayabusa のリアクティビティの基本単位。アリーナ型実装により `Copy` 可能なトークンとして提供され、所有権問題を回避する。Signal の値変化は依存する Memo・Effect・View に自動伝播する。
 _Avoid_: State, Observable, Store（Store は別の概念）
