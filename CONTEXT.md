@@ -50,6 +50,10 @@ _Avoid_: Runtime, Host, Surface Adapter
 `hayate-adapter-web` の動作モードの一つ。WebGPU または EditContext API のいずれかが利用できない場合に自動選択される。Element Layer → Taffy → Raw Layer という `hayate-core` の統一パイプラインを通り、Raw Layer の絶対座標出力を absolutely-positioned な HTML 要素（`div` 等）にマッピングして描画する。Canvas Mode と同一のコードパスを経由し、最終的な描画先だけが異なる（DOM vs GPU）。IME はブラウザ native の動作に委ねる。モード選択はランタイム自動検出で行い、アプリ側は意識しない。
 _Avoid_: フォールバック（劣化の含意を避けるため）、DOM Mode、native CSS モード
 
+**Interaction Event**:
+ポインタやキーボード操作に起因する要素単位のイベント。`hover-enter` / `hover-leave` / `focus` / `blur` / `active-start` / `active-end` 等を含み、`poll-events()` で上位層に通知される。Hayate はイベントを通知するだけであり、インタラクション状態に応じたスタイル切り替えは上位層（Hayabusa の Signal / Effect）の責務。Hayate は「ホバー中スタイル」という概念を持たない。
+_Avoid_: :hover スタイル、状態付きスタイル、CSS 擬似クラス
+
 **Signal**:
 Hayabusa のリアクティビティの基本単位。アリーナ型実装により `Copy` 可能なトークンとして提供され、所有権問題を回避する。Signal の値変化は依存する Memo・Effect・View に自動伝播する。
 _Avoid_: State, Observable, Store（Store は別の概念）
@@ -57,6 +61,18 @@ _Avoid_: State, Observable, Store（Store は別の概念）
 **Scene Graph**:
 Hayate 内部の描画オブジェクト間の親子・描画順序・transform / clip 関係を表す保持型グラフ。z-order / transform 継承 / clip / hit-test / grouping のための補助構造。NodeId 指定で直接 mutation される実体オブジェクト群。
 _Avoid_: Virtual DOM, Component Tree
+
+**Scroll Offset**:
+`scroll-view` Element のスクロール位置（x, y）。Hayate は保持せず、上位層（Hayabusa）が `poll-events()` の scroll イベントから delta を積算して管理する。毎フレーム `element_set_scroll_offset(id, x, y)` で Hayate に渡し、Hayate は `scene_build` 時に子要素の座標をオフセット分だけ平行移動しクリップ矩形を適用する。`position: sticky` も同 scroll offset を使って `scene_build` 内でクランプ計算するため、Hayate の責務に含む。イナーシャ・スナップ等の物理演算は Hayabusa の責務。
+_Avoid_: Hayate がスクロール状態を持つ設計、StyleProp::ScrollOffset
+
+**Z-Order**:
+SceneGraph の描画順序制御。同一 parent 内で `StyleProp::ZIndex(n)` が高い子ほど後に walk され、前景に描画される（painter's algorithm）。「親の兄弟より前景に出る」ケース（モーダル・tooltip）はアプリ側が root 直下に要素を配置することで解決し、CSS stacking context 相当の概念は Hayate に持ち込まない。
+_Avoid_: NodeKind::Layer、stacking context
+
+**Transform Group**:
+SceneGraph の Node 種別の一つ（`NodeKind::Group`）。affine 変換行列を保持し、子 Node 群に GPU 側で matrix を適用する。Vello の `push_transform()` / `pop()` に対応する。`StyleProp::Transform` として座標に焼き込む方式とは異なり、layout 再計算ゼロでサブツリー全体を変換できるため、アニメーションの基盤となる。
+_Avoid_: StyleProp::Transform（座標焼き込み方式は layout 再計算が不要にならない）
 
 **Node**:
 Hayate の Raw Layer が管理する描画プリミティブの最小単位。`rect` / `text-run` / `image` / `clip` / `layer` 等、GPU が直接処理できる型のみ存在する。HTML の div/span や React Component とは異なる。
