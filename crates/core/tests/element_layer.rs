@@ -555,6 +555,347 @@ fn key_down_event_carries_modifiers() {
 
 // ── Cursor visibility tests ───────────────────────────────────────────────
 
+// ── Tree mutation: insert_before / reparenting / root removal ───────────
+
+#[test]
+fn insert_before_places_child_at_given_index() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::View);
+    let a = tree.element_create(ElementKind::View);
+    let c = tree.element_create(ElementKind::View);
+    let b = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.set_viewport(300.0, 100.0);
+    tree.element_set_style(
+        root,
+        &[
+            StyleProp::Display(DisplayValue::Flex),
+            StyleProp::FlexDirection(FlexDirectionValue::Row),
+            StyleProp::Width(Dimension::px(300.0)),
+            StyleProp::Height(Dimension::px(100.0)),
+        ],
+    );
+    for &child in &[a, b, c] {
+        tree.element_set_style(
+            child,
+            &[StyleProp::Width(Dimension::px(50.0)), StyleProp::Height(Dimension::px(50.0))],
+        );
+    }
+    tree.element_append_child(root, a);
+    tree.element_append_child(root, c);
+    // children = [a, c]; insert b before c → [a, b, c]
+    tree.element_insert_before(root, b, c);
+    tree.render();
+    let ax = tree.element_layout_rect(a).expect("a missing").0;
+    let bx = tree.element_layout_rect(b).expect("b missing").0;
+    let cx = tree.element_layout_rect(c).expect("c missing").0;
+    assert!(ax < bx && bx < cx, "expected a<b<c, got {ax}, {bx}, {cx}");
+}
+
+#[test]
+fn append_child_detaches_from_previous_parent() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::View);
+    let old_parent = tree.element_create(ElementKind::View);
+    let new_parent = tree.element_create(ElementKind::View);
+    let child = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.element_append_child(root, old_parent);
+    tree.element_append_child(root, new_parent);
+    tree.element_append_child(old_parent, child);
+    assert_eq!(tree.element_parent(child), Some(old_parent));
+
+    // Reparent under new_parent.
+    tree.element_append_child(new_parent, child);
+    assert_eq!(tree.element_parent(child), Some(new_parent));
+
+    // Removing old_parent must NOT cascade into child.
+    tree.element_remove(old_parent);
+    assert_eq!(tree.element_kind(child), Some(ElementKind::View));
+    assert_eq!(tree.element_parent(child), Some(new_parent));
+}
+
+#[test]
+fn removing_root_clears_root_reference() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::View);
+    let child = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.element_append_child(root, child);
+    assert_eq!(tree.root(), Some(root));
+
+    tree.element_remove(root);
+    assert_eq!(tree.root(), None);
+    assert_eq!(tree.element_kind(root), None);
+    assert_eq!(tree.element_kind(child), None, "child should be removed with root subtree");
+}
+
+#[test]
+fn content_size_returns_descendant_bounds() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::ScrollView);
+    let content = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.set_viewport(300.0, 300.0);
+    tree.element_set_style(
+        root,
+        &[StyleProp::Width(Dimension::px(200.0)), StyleProp::Height(Dimension::px(100.0))],
+    );
+    tree.element_set_style(
+        content,
+        &[StyleProp::Width(Dimension::px(180.0)), StyleProp::Height(Dimension::px(500.0))],
+    );
+    tree.element_append_child(root, content);
+    tree.render();
+
+    let (cw, ch) = tree.element_content_size(root);
+    assert!((cw - 180.0).abs() < 0.5, "expected content width 180, got {cw}");
+    assert!((ch - 500.0).abs() < 0.5, "expected content height 500, got {ch}");
+
+    // Empty viewport-less content collapses to zero.
+    let empty = tree.element_create(ElementKind::View);
+    assert_eq!(tree.element_content_size(empty), (0.0, 0.0));
+}
+
+#[test]
+fn resolved_elements_returns_absolute_layout_per_element() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::View);
+    let child = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.set_viewport(400.0, 400.0);
+    tree.element_set_style(
+        root,
+        &[
+            StyleProp::Width(Dimension::px(400.0)),
+            StyleProp::Height(Dimension::px(400.0)),
+            StyleProp::PaddingLeft(Dimension::px(20.0)),
+            StyleProp::PaddingTop(Dimension::px(30.0)),
+            StyleProp::BackgroundColor(Color::new(0.0, 0.0, 0.0, 1.0)),
+        ],
+    );
+    tree.element_set_style(
+        child,
+        &[
+            StyleProp::Width(Dimension::px(50.0)),
+            StyleProp::Height(Dimension::px(50.0)),
+            StyleProp::BackgroundColor(Color::new(0.0, 1.0, 0.0, 1.0)),
+        ],
+    );
+    tree.element_append_child(root, child);
+
+    let resolved = tree.resolved_elements();
+    let root_re = resolved.iter().find(|(id, _)| *id == root).map(|(_, r)| r).expect("root");
+    let child_re = resolved.iter().find(|(id, _)| *id == child).map(|(_, r)| r).expect("child");
+
+    assert_eq!(root_re.kind, ElementKind::View);
+    assert!((root_re.x - 0.0).abs() < 0.5);
+    assert!((root_re.y - 0.0).abs() < 0.5);
+    assert!((root_re.width - 400.0).abs() < 0.5);
+
+    // Child's absolute position is offset by root's padding.
+    assert!((child_re.x - 20.0).abs() < 0.5, "child x = {}", child_re.x);
+    assert!((child_re.y - 30.0).abs() < 0.5, "child y = {}", child_re.y);
+    assert!((child_re.width - 50.0).abs() < 0.5);
+    assert_eq!(child_re.background_color.map(|c| c.g), Some(1.0));
+}
+
+#[test]
+fn insert_before_falls_back_to_append_when_before_is_not_a_child() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::View);
+    let stranger = tree.element_create(ElementKind::View); // never attached to root
+    let a = tree.element_create(ElementKind::View);
+    let b = tree.element_create(ElementKind::View);
+    let c = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.set_viewport(400.0, 100.0);
+    tree.element_set_style(
+        root,
+        &[
+            StyleProp::Display(DisplayValue::Flex),
+            StyleProp::FlexDirection(FlexDirectionValue::Row),
+            StyleProp::Width(Dimension::px(400.0)),
+            StyleProp::Height(Dimension::px(100.0)),
+        ],
+    );
+    for &child in &[a, b, c] {
+        tree.element_set_style(
+            child,
+            &[StyleProp::Width(Dimension::px(50.0)), StyleProp::Height(Dimension::px(50.0))],
+        );
+    }
+    tree.element_append_child(root, a);
+    tree.element_append_child(root, c);
+    // `stranger` is not a child of root → b should be appended after c.
+    tree.element_insert_before(root, b, stranger);
+    tree.render();
+    let ax = tree.element_layout_rect(a).expect("a").0;
+    let bx = tree.element_layout_rect(b).expect("b").0;
+    let cx = tree.element_layout_rect(c).expect("c").0;
+    assert!(ax < cx && cx < bx, "fallback append should place b last: {ax}, {cx}, {bx}");
+}
+
+// ── Style: percent / border / opacity ───────────────────────────────────
+
+#[test]
+fn percent_dimension_resolves_against_parent() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::View);
+    let child = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.set_viewport(400.0, 200.0);
+    tree.element_set_style(
+        root,
+        &[StyleProp::Width(Dimension::px(400.0)), StyleProp::Height(Dimension::px(200.0))],
+    );
+    tree.element_set_style(
+        child,
+        &[
+            StyleProp::Width(Dimension::percent(50.0)),
+            StyleProp::Height(Dimension::percent(25.0)),
+        ],
+    );
+    tree.element_append_child(root, child);
+    tree.render();
+    let (_, _, w, h) = tree.element_layout_rect(child).expect("child rect");
+    assert!((w - 200.0).abs() < 0.5, "expected 50% of 400 = 200, got {w}");
+    assert!((h - 50.0).abs() < 0.5, "expected 25% of 200 = 50, got {h}");
+}
+
+#[test]
+fn border_emits_four_side_rects() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.set_viewport(200.0, 200.0);
+    tree.element_set_style(
+        root,
+        &[
+            StyleProp::Width(Dimension::px(100.0)),
+            StyleProp::Height(Dimension::px(100.0)),
+            StyleProp::BorderWidth(2.0),
+            StyleProp::BorderColor(Color::new(1.0, 0.0, 0.0, 1.0)),
+        ],
+    );
+    let sg = tree.render();
+    // No background → only the 4 border rects.
+    let red_rects: Vec<_> = sg
+        .iter()
+        .filter_map(|(_, n)| match &n.kind {
+            NodeKind::Rect { color, .. } if (color[0] - 1.0).abs() < 1e-3 && color[1].abs() < 1e-3 => Some(n),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(red_rects.len(), 4, "expected 4 border rects, got {}", red_rects.len());
+}
+
+#[test]
+fn opacity_multiplies_background_alpha() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.set_viewport(100.0, 100.0);
+    tree.element_set_style(
+        root,
+        &[
+            StyleProp::Width(Dimension::px(100.0)),
+            StyleProp::Height(Dimension::px(100.0)),
+            StyleProp::BackgroundColor(Color::new(1.0, 0.0, 0.0, 1.0)),
+            StyleProp::Opacity(0.5),
+        ],
+    );
+    let sg = tree.render();
+    let alpha = sg
+        .iter()
+        .find_map(|(_, n)| match &n.kind {
+            NodeKind::Rect { color, .. } => Some(color[3]),
+            _ => None,
+        })
+        .expect("background rect");
+    assert!((alpha - 0.5).abs() < 1e-3, "expected alpha 0.5, got {alpha}");
+}
+
+// ── TextInput edge cases ─────────────────────────────────────────────────
+
+#[test]
+fn set_text_content_clears_active_preedit() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+
+    tree.element_append_text_content(input, "abc");
+    tree.element_set_preedit(input, "DEF");
+    // Display reflects the active preedit.
+    assert_eq!(tree.element_get_text_content(input), "abcDEF");
+
+    // Replacing content while a preedit is active must drop the preedit.
+    tree.element_set_text_content(input, "fresh");
+    assert_eq!(tree.element_get_text_content(input), "fresh");
+}
+
+#[test]
+fn commit_preedit_without_active_preedit_is_noop() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+    tree.element_append_text_content(input, "abc");
+
+    tree.element_commit_preedit(input);
+    assert_eq!(tree.element_get_text_content(input), "abc");
+}
+
+// ── Transform / scroll-offset emit optimizations ─────────────────────────
+
+#[test]
+fn clearing_transform_removes_group_node() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.set_viewport(200.0, 200.0);
+    tree.element_set_style(
+        root,
+        &[
+            StyleProp::Width(Dimension::px(200.0)),
+            StyleProp::Height(Dimension::px(200.0)),
+            StyleProp::BackgroundColor(Color::new(1.0, 0.0, 0.0, 1.0)),
+        ],
+    );
+    // Apply a transform → expect a Group node.
+    tree.element_set_transform(root, Some([1.0, 0.0, 0.0, 1.0, 5.0, 5.0]));
+    let sg = tree.render();
+    let group_count = sg.iter().filter(|(_, n)| matches!(n.kind, NodeKind::Group { .. })).count();
+    assert_eq!(group_count, 1, "transform should emit one Group");
+
+    // Clear the transform → Group must disappear.
+    tree.element_set_transform(root, None);
+    let sg = tree.render();
+    let group_count = sg.iter().filter(|(_, n)| matches!(n.kind, NodeKind::Group { .. })).count();
+    assert_eq!(group_count, 0, "clearing transform should remove Group");
+}
+
+#[test]
+fn scroll_offset_zero_skips_translate_group() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::ScrollView);
+    let content = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.set_viewport(300.0, 300.0);
+    tree.element_set_style(
+        root,
+        &[StyleProp::Width(Dimension::px(200.0)), StyleProp::Height(Dimension::px(100.0))],
+    );
+    tree.element_set_style(
+        content,
+        &[StyleProp::Width(Dimension::px(200.0)), StyleProp::Height(Dimension::px(500.0))],
+    );
+    tree.element_append_child(root, content);
+    // scroll_offset defaults to (0, 0): the scroll-translate Group should be omitted.
+    let sg = tree.render();
+    let group_count = sg.iter().filter(|(_, n)| matches!(n.kind, NodeKind::Group { .. })).count();
+    assert_eq!(group_count, 0, "ScrollView with no offset should not emit a Group");
+}
+
 #[test]
 fn cursor_visible_on_focus_hidden_on_blur() {
     let mut tree = ElementTree::new();
