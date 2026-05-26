@@ -103,8 +103,14 @@ fn walk(tree: &ElementTree, id: ElementId, ox: f32, oy: f32, sg: &mut SceneGraph
         }
     }
 
-    // 4) Recurse into children.
-    for &child in &el.children {
+    // 4) Recurse into children, sorted by z_index (stable — preserves document order for ties).
+    let mut children: Vec<(ElementId, i32)> = el
+        .children
+        .iter()
+        .map(|&cid| (cid, tree.elements.get(cid).map_or(0, |c| c.visual.z_index)))
+        .collect();
+    children.sort_by_key(|&(_, z)| z);
+    for (child, _) in children {
         walk(tree, child, x, y, sg);
     }
 }

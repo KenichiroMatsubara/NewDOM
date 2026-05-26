@@ -158,6 +158,57 @@ fn scene_build_walks_absolute_coordinates() {
     assert!((y - 20.0).abs() < 0.5, "child y = {y}");
 }
 
+// ── ZIndex tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn z_index_controls_paint_order() {
+    let mut tree = ElementTree::new();
+    let root = tree.element_create(ElementKind::View);
+    let back = tree.element_create(ElementKind::View);
+    let front = tree.element_create(ElementKind::View);
+    tree.set_root(root);
+    tree.set_viewport(200.0, 200.0);
+    tree.element_set_style(
+        root,
+        &[StyleProp::Width(Dimension::px(200.0)), StyleProp::Height(Dimension::px(200.0))],
+    );
+    // back is appended first but gets z_index 1; front appended second but z_index 0.
+    // After sort, front (z=0) should be painted before back (z=1).
+    tree.element_append_child(root, back);
+    tree.element_append_child(root, front);
+    tree.element_set_style(
+        back,
+        &[
+            StyleProp::Width(Dimension::px(50.0)),
+            StyleProp::Height(Dimension::px(50.0)),
+            StyleProp::BackgroundColor(Color::new(1.0, 0.0, 0.0, 1.0)),
+            StyleProp::ZIndex(1),
+        ],
+    );
+    tree.element_set_style(
+        front,
+        &[
+            StyleProp::Width(Dimension::px(50.0)),
+            StyleProp::Height(Dimension::px(50.0)),
+            StyleProp::BackgroundColor(Color::new(0.0, 0.0, 1.0, 1.0)),
+            StyleProp::ZIndex(0),
+        ],
+    );
+    let sg = tree.render();
+    // Collect paint order: look at first-component of color for each 50×50 rect.
+    let order: Vec<f32> = sg
+        .iter()
+        .filter_map(|(_, n)| match &n.kind {
+            NodeKind::Rect { width, color, .. } if (*width - 50.0).abs() < 0.5 => Some(color[0]),
+            _ => None,
+        })
+        .collect();
+    // front (blue, r=0) should come before back (red, r=1).
+    assert_eq!(order.len(), 2, "expected 2 child rects");
+    assert!((order[0] - 0.0).abs() < 1e-3, "front (blue) first");
+    assert!((order[1] - 1.0).abs() < 1e-3, "back (red) second");
+}
+
 // ── Event system tests ───────────────────────────────────────────────────
 
 #[test]

@@ -22,6 +22,7 @@ pub struct Visual {
     pub border_color: Option<Color>,
     pub text_color: Color,
     pub font_size: f32,
+    pub z_index: i32,
 }
 
 impl Default for Visual {
@@ -34,6 +35,7 @@ impl Default for Visual {
             border_color: None,
             text_color: Color::BLACK,
             font_size: 16.0,
+            z_index: 0,
         }
     }
 }
@@ -80,6 +82,7 @@ pub struct ResolvedElement {
     pub border_color: Option<Color>,
     pub text_color: Color,
     pub font_size: f32,
+    pub z_index: i32,
     pub text: Option<String>,
 }
 
@@ -472,6 +475,7 @@ fn walk_resolved(
             border_color: el.visual.border_color,
             text_color: el.visual.text_color,
             font_size: el.visual.font_size,
+            z_index: el.visual.z_index,
             text: el.text.clone(),
         },
     ));
@@ -541,6 +545,7 @@ fn apply_visual(visual: &mut Visual, prop: &StyleProp, text_dirty: &mut bool) {
             visual.text_color = c;
             *text_dirty = true;
         }
+        StyleProp::ZIndex(z) => visual.z_index = z,
         _ => {}
     }
 }

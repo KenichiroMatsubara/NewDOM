@@ -69,6 +69,8 @@ interface types {
     // text
     font-size(f32),
     color(color),
+    // stacking
+    z-index(s32),
   }
 
   // Events

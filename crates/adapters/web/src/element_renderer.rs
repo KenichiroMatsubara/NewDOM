@@ -25,6 +25,10 @@ fn kind_from_u32(v: u32) -> Result<ElementKind, JsValue> {
     ElementKind::from_u32(v).ok_or_else(|| JsValue::from_str(&format!("unknown element kind {v}")))
 }
 
+// ── Style tag constants (exposed to JS) ──────────────────────────────────
+
+#[wasm_bindgen] pub fn style_tag_z_index() -> u32 { crate::style_packet::TAG_Z_INDEX }
+
 // ── Event kind constants (exposed to JS) ─────────────────────────────────
 
 #[wasm_bindgen] pub fn event_kind_click()  -> f64 { 0.0 }
@@ -325,6 +329,7 @@ fn apply_resolved_to_dom(html_el: &HtmlElement, el: &ResolvedElement) -> Result<
     style.set_property("position", "absolute")?;
     style.set_property("left", &format!("{}px", el.x))?;
     style.set_property("top", &format!("{}px", el.y))?;
+    style.set_property("z-index", &el.z_index.to_string())?;
     style.set_property("width", &format!("{}px", el.width))?;
     style.set_property("height", &format!("{}px", el.height))?;
     style.set_property("opacity", &format!("{}", el.opacity))?;
