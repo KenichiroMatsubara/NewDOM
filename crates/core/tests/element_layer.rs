@@ -499,3 +499,91 @@ fn composition_lifecycle_events_queued() {
     assert!(matches!(&events[1], Event::CompositionUpdate { text, .. } if text == "あい"));
     assert!(matches!(&events[2], Event::CompositionEnd { text, .. } if text == "愛"));
 }
+
+// ── Keyboard event tests (Enter key, modifiers) ──────────────────────────
+
+#[test]
+fn backspace_removes_last_char() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+
+    tree.element_append_text_content(input, "hello");
+    tree.element_backspace(input);
+    assert_eq!(tree.element_get_text_content(input), "hell");
+
+    tree.element_backspace(input);
+    assert_eq!(tree.element_get_text_content(input), "hel");
+}
+
+#[test]
+fn backspace_on_empty_is_noop() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+
+    tree.element_backspace(input);
+    assert_eq!(tree.element_get_text_content(input), "");
+}
+
+#[test]
+fn enter_key_inserts_newline() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+
+    tree.element_append_text_content(input, "line1");
+    tree.element_append_text_content(input, "\n");
+    tree.element_append_text_content(input, "line2");
+    assert_eq!(tree.element_get_text_content(input), "line1\nline2");
+}
+
+#[test]
+fn key_down_event_carries_modifiers() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+
+    // Shift+A with modifier bitmask
+    tree.push_event(Event::KeyDown { target: input, key: "A".to_string(), modifiers: 1 });
+    let events = tree.poll_events();
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], Event::KeyDown { key, modifiers, .. } if key == "A" && *modifiers == 1)
+    );
+}
+
+// ── Cursor visibility tests ───────────────────────────────────────────────
+
+#[test]
+fn cursor_visible_on_focus_hidden_on_blur() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+
+    tree.element_set_cursor_visible(input, true);
+    tree.set_viewport(200.0, 200.0);
+    tree.element_set_style(input, &[StyleProp::Width(Dimension::px(200.0)), StyleProp::Height(Dimension::px(40.0))]);
+
+    let sg = tree.render();
+    // When cursor is visible and text_content is empty, a fallback Rect cursor is emitted.
+    let cursor_rects: Vec<_> = sg
+        .iter()
+        .filter_map(|(_, n)| match &n.kind {
+            NodeKind::Rect { width, .. } if (*width - 1.5).abs() < 0.1 => Some(n),
+            _ => None,
+        })
+        .collect();
+    assert!(!cursor_rects.is_empty(), "cursor rect should be emitted when cursor_visible=true");
+
+    tree.element_set_cursor_visible(input, false);
+    let sg = tree.render();
+    let cursor_rects: Vec<_> = sg
+        .iter()
+        .filter_map(|(_, n)| match &n.kind {
+            NodeKind::Rect { width, .. } if (*width - 1.5).abs() < 0.1 => Some(n),
+            _ => None,
+        })
+        .collect();
+    assert!(cursor_rects.is_empty(), "cursor rect should not be emitted when cursor_visible=false");
+}

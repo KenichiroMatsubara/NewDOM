@@ -94,7 +94,7 @@ pub enum Event {
     PointerUp { target: ElementId, x: f32, y: f32 },
     PointerEnter { target: ElementId },
     PointerLeave { target: ElementId },
-    KeyDown { target: ElementId, key: String },
+    KeyDown { target: ElementId, key: String, modifiers: u32 },
 }
 
 /// Fully-resolved per-element state after layout, keyed by stable ElementId.

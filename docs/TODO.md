@@ -4,41 +4,39 @@ Phase 1〜5 完了後の未実装項目。優先度順。
 
 ---
 
-## P0 — 即修正（バグ・空実装）
+## ✅ 完了済み（P0・P1）
 
-### 1. `on_pointer_up` / `on_pointer_move` が空実装
-- **ファイル**: `crates/adapters/web/src/element_renderer.rs`
-- `on_pointer_up` → `active-end` イベントを emit する
-- `on_pointer_move` → `hovered_element` を追跡し `hover-enter` / `hover-leave` を emit する
-- WIT に `hover-enter(element-id)` / `hover-leave(element-id)` / `active-start(element-id)` / `active-end(element-id)` を追加（Phase 1b 相当）
+### ✅ 1. `on_pointer_up` / `on_pointer_move` 実装済み
+- `on_pointer_up` → `Event::PointerUp` を emit
+- `on_pointer_move` → `hovered_element` を追跡し `Event::PointerEnter` / `Event::PointerLeave` を emit
+- `encode_events` で pointer_up(9) / pointer_enter(10) / pointer_leave(11) を JS に送出
 
-### 2. ScrollView スクロール上限クランプなし
-- **ファイル**: `crates/adapters/web/src/element_renderer.rs` `on_wheel()`
-- コンテンツ高さ（子要素の合計）を超えてスクロールできてしまう
-- `element_set_scroll_offset` 側でもクランプが必要
-- コンテンツサイズを `Element.scroll_content_size: (f32, f32)` に記録し、layout 後に更新する
+### ✅ 2. ScrollView スクロール上限クランプ実装済み
+- `on_wheel()` で `element_content_size()` を取得し `(ox + delta).clamp(0.0, max)` を適用
+
+### ✅ 3. TextInput カーソル描画（Canvas モード）実装済み
+- `crates/core/src/element/scene_build.rs` にカーソル描画ロジック実装済み
+- `element_set_cursor_visible(id, bool)` で on/off 制御
+- Parley `Cursor::from_byte_index` から `geometry()` でピクセル位置を取得して Rect ノードを emit
+
+### ✅ 4. キーボードイベント実装済み
+- `on_key_down(key: &str, modifiers: u32)` を両レンダラーに追加
+- `Backspace`: 最後の文字を削除
+- `Enter`: TextInput に `\n` を挿入
+- `modifiers` bitmask: `modifier_shift()/ctrl()/alt()/meta()` 定数を JS に公開
+- `Event::KeyDown { target, key, modifiers }` に `modifiers` フィールドを追加
+- `encode_events` で `[12, target_ffi, modifiers]` に更新
+
+### ✅ 5. PNG 以外の画像フォーマット対応済み
+- `fetch_image()` が `image` クレートで PNG / JPEG / WebP を自動判別してデコード
+
+### ✅ カーソル点滅
+- `HayateElementRenderer::tick_cursor(timestamp_ms: f64)` を追加
+- JS の `requestAnimationFrame` から呼ぶことで 500ms 周期で点滅
 
 ---
 
-## P1 — 機能完成に必須
-
-### 3. TextInput カーソル描画（Canvas モード）
-- **ファイル**: `crates/core/src/element/scene_build.rs`
-- TextInput がフォーカスされているとき、カーソル位置に細い Rect ノードを追加描画する
-- カーソル位置は Parley `PlainEditor` から取得可能（`selection.focus().index()`）
-- フォーカス状態は adapter から core に `element_set_focused(id, bool)` で通知する設計が必要
-
-### 4. キーボードイベント未実装
-- **ファイル**: `crates/adapters/web/src/element_renderer.rs`
-- `on_key_down(key: &str, modifiers: u32)` を両レンダラーに追加
-- 最低限: `Backspace`（TextInput の最後の文字削除）、`Enter`
-- WIT に `key-down` イベントを追加するか、JS 側で on_text_input に変換するかを決定する
-
-### 5. PNG 以外の画像フォーマット未対応
-- **ファイル**: `crates/adapters/web/src/element_renderer.rs` `fetch_png()`
-- 関数名を `fetch_image()` に変更し、Content-Type ヘッダを見て分岐する
-- JPEG: `jpeg-decoder` クレートを追加（または `image` クレートで統一）
-- WebP: `image` クレート（`image = { features = ["webp"] }`）
+## P2 — 品質向上
 
 ---
 

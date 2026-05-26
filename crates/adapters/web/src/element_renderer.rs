@@ -47,6 +47,14 @@ fn kind_from_u32(v: u32) -> Result<ElementKind, JsValue> {
 #[wasm_bindgen] pub fn event_kind_pointer_leave()       -> f64 { 11.0 }
 #[wasm_bindgen] pub fn event_kind_key_down()            -> f64 { 12.0 }
 
+// ── Modifier key bitmask constants (exposed to JS) ───────────────────────
+// Match KeyboardEvent.getModifierState flags for JS interop.
+
+#[wasm_bindgen] pub fn modifier_shift() -> u32 { 1 }
+#[wasm_bindgen] pub fn modifier_ctrl()  -> u32 { 2 }
+#[wasm_bindgen] pub fn modifier_alt()   -> u32 { 4 }
+#[wasm_bindgen] pub fn modifier_meta()  -> u32 { 8 }
+
 // ── Element kind discriminant getters (exposed to JS) ────────────────────
 
 #[wasm_bindgen]
@@ -268,16 +276,33 @@ impl HayateElementRenderer {
         self.focused_element.map(element_id_to_f64).unwrap_or(0.0)
     }
 
-    /// Handle a key press on the focused element. `key` is the KeyboardEvent.key string.
-    pub fn on_key_down(&mut self, key: &str) {
+    /// Handle a key press on the focused element.
+    /// `key` is KeyboardEvent.key; `modifiers` is a bitmask of modifier_shift/ctrl/alt/meta.
+    pub fn on_key_down(&mut self, key: &str, modifiers: u32) {
         let focused = match self.focused_element {
             Some(id) => id,
             None => return,
         };
-        if key == "Backspace" {
-            self.tree.element_backspace(focused);
+        match key {
+            "Backspace" => {
+                self.tree.element_backspace(focused);
+            }
+            "Enter" => {
+                self.tree.element_append_text_content(focused, "\n");
+                self.tree.push_event(Event::TextInput { target: focused, text: "\n".to_string() });
+            }
+            _ => {}
         }
-        self.tree.push_event(Event::KeyDown { target: focused, key: key.to_string() });
+        self.tree.push_event(Event::KeyDown { target: focused, key: key.to_string(), modifiers });
+    }
+
+    /// Toggle the cursor visibility for blinking. JS calls this from requestAnimationFrame
+    /// with the current timestamp; the cursor alternates every 500 ms.
+    pub fn tick_cursor(&mut self, timestamp_ms: f64) {
+        if let Some(focused) = self.focused_element {
+            let visible = ((timestamp_ms as u64) / 500) % 2 == 0;
+            self.tree.element_set_cursor_visible(focused, visible);
+        }
     }
 
     /// Called by JS when the user types printable text into the focused TextInput.
@@ -564,15 +589,22 @@ impl HayateElementHtmlRenderer {
         self.focused_element.map(element_id_to_f64).unwrap_or(0.0)
     }
 
-    pub fn on_key_down(&mut self, key: &str) {
+    pub fn on_key_down(&mut self, key: &str, modifiers: u32) {
         let focused = match self.focused_element {
             Some(id) => id,
             None => return,
         };
-        if key == "Backspace" {
-            self.tree.element_backspace(focused);
+        match key {
+            "Backspace" => {
+                self.tree.element_backspace(focused);
+            }
+            "Enter" => {
+                self.tree.element_append_text_content(focused, "\n");
+                self.tree.push_event(Event::TextInput { target: focused, text: "\n".to_string() });
+            }
+            _ => {}
         }
-        self.tree.push_event(Event::KeyDown { target: focused, key: key.to_string() });
+        self.tree.push_event(Event::KeyDown { target: focused, key: key.to_string(), modifiers });
     }
 
     pub fn on_text_input(&mut self, id: f64, text: &str) {
@@ -782,7 +814,7 @@ fn apply_resolved_to_dom(html_el: &HtmlElement, el: &ResolvedElement) -> Result<
 ///   pointer_up:    [9,  target_ffi, x, y]
 ///   pointer_enter: [10, target_ffi]
 ///   pointer_leave: [11, target_ffi]
-///   key_down:      [12, target_ffi]
+///   key_down:      [12, target_ffi, modifiers]
 fn encode_events(events: &[Event]) -> Box<[f64]> {
     use slotmap::Key;
     let mut out: Vec<f64> = Vec::with_capacity(events.len() * 4);
@@ -843,9 +875,10 @@ fn encode_events(events: &[Event]) -> Box<[f64]> {
                 out.push(11.0);
                 out.push(target.data().as_ffi() as f64);
             }
-            Event::KeyDown { target, .. } => {
+            Event::KeyDown { target, modifiers, .. } => {
                 out.push(12.0);
                 out.push(target.data().as_ffi() as f64);
+                out.push(*modifiers as f64);
             }
         }
     }
