@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use hayate_core::{ElementId, ElementKind, ElementTree, ResolvedElement, vello_bridge};
+use hayate_core::{ElementId, ElementKind, ElementTree, Event, ResolvedElement, vello_bridge};
 use slotmap::{Key, KeyData};
 use vello::peniko::color::{AlphaColor, Srgb};
 use wasm_bindgen::prelude::*;
@@ -25,6 +25,14 @@ fn kind_from_u32(v: u32) -> Result<ElementKind, JsValue> {
     ElementKind::from_u32(v).ok_or_else(|| JsValue::from_str(&format!("unknown element kind {v}")))
 }
 
+// ── Event kind constants (exposed to JS) ─────────────────────────────────
+
+#[wasm_bindgen] pub fn event_kind_click()  -> f64 { 0.0 }
+#[wasm_bindgen] pub fn event_kind_focus()  -> f64 { 1.0 }
+#[wasm_bindgen] pub fn event_kind_blur()   -> f64 { 2.0 }
+#[wasm_bindgen] pub fn event_kind_scroll() -> f64 { 7.0 }
+#[wasm_bindgen] pub fn event_kind_resize() -> f64 { 8.0 }
+
 // ── Element kind discriminant getters (exposed to JS) ────────────────────
 
 #[wasm_bindgen]
@@ -46,6 +54,7 @@ pub fn element_kind_scroll_view() -> u32 { 5 }
 pub struct HayateElementRenderer {
     gpu: GpuSurface,
     tree: ElementTree,
+    focused_element: Option<ElementId>,
 }
 
 #[wasm_bindgen]
@@ -56,7 +65,7 @@ impl HayateElementRenderer {
         let gpu = GpuSurface::init(canvas).await?;
         let mut tree = ElementTree::new();
         tree.set_viewport(width, height);
-        Ok(Self { gpu, tree })
+        Ok(Self { gpu, tree, focused_element: None })
     }
 
     pub fn set_viewport(&mut self, width: f32, height: f32) {
@@ -113,6 +122,42 @@ impl HayateElementRenderer {
         let scene = vello_bridge::build_scene(sg);
         self.gpu.present(&scene, base_color)
     }
+
+    pub fn on_pointer_down(&mut self, x: f32, y: f32) {
+        let hit = self.tree.hit_test(x, y);
+        if let Some(target) = hit {
+            self.tree.push_event(Event::Click { target, x, y });
+            if self.focused_element != hit {
+                if let Some(prev) = self.focused_element {
+                    self.tree.push_event(Event::Blur(prev));
+                }
+                self.focused_element = hit;
+                self.tree.push_event(Event::Focus(target));
+            }
+        } else if let Some(prev) = self.focused_element.take() {
+            self.tree.push_event(Event::Blur(prev));
+        }
+    }
+
+    pub fn on_pointer_up(&mut self, _x: f32, _y: f32) {}
+
+    pub fn on_pointer_move(&mut self, _x: f32, _y: f32) {}
+
+    pub fn on_wheel(&mut self, x: f32, y: f32, delta_x: f32, delta_y: f32) {
+        if let Some(target) = self.tree.hit_test(x, y) {
+            self.tree.push_event(Event::Scroll { target, delta_x, delta_y });
+        }
+    }
+
+    pub fn on_resize(&mut self, width: f32, height: f32) {
+        self.tree.set_viewport(width, height);
+        self.tree.push_event(Event::Resize { width, height });
+    }
+
+    pub fn poll_events(&mut self) -> Box<[f64]> {
+        let events = self.tree.poll_events();
+        encode_events(&events)
+    }
 }
 
 // ── HTML Mode renderer ───────────────────────────────────────────────────
@@ -125,6 +170,7 @@ pub struct HayateElementHtmlRenderer {
     // element's lifetime, so this mapping is correct across structural changes
     // (unlike SceneGraph NodeId which is reassigned on every build).
     dom_nodes: HashMap<u64, Element>,
+    focused_element: Option<ElementId>,
 }
 
 #[wasm_bindgen]
@@ -137,7 +183,7 @@ impl HayateElementHtmlRenderer {
         let height = container.client_height().max(1) as f32;
         let mut tree = ElementTree::new();
         tree.set_viewport(width, height);
-        Ok(Self { container, tree, dom_nodes: HashMap::new() })
+        Ok(Self { container, tree, dom_nodes: HashMap::new(), focused_element: None })
     }
 
     pub fn set_viewport(&mut self, width: f32, height: f32) {
@@ -236,6 +282,42 @@ impl HayateElementHtmlRenderer {
 
         Ok(())
     }
+
+    pub fn on_pointer_down(&mut self, x: f32, y: f32) {
+        let hit = self.tree.hit_test(x, y);
+        if let Some(target) = hit {
+            self.tree.push_event(Event::Click { target, x, y });
+            if self.focused_element != hit {
+                if let Some(prev) = self.focused_element {
+                    self.tree.push_event(Event::Blur(prev));
+                }
+                self.focused_element = hit;
+                self.tree.push_event(Event::Focus(target));
+            }
+        } else if let Some(prev) = self.focused_element.take() {
+            self.tree.push_event(Event::Blur(prev));
+        }
+    }
+
+    pub fn on_pointer_up(&mut self, _x: f32, _y: f32) {}
+
+    pub fn on_pointer_move(&mut self, _x: f32, _y: f32) {}
+
+    pub fn on_wheel(&mut self, x: f32, y: f32, delta_x: f32, delta_y: f32) {
+        if let Some(target) = self.tree.hit_test(x, y) {
+            self.tree.push_event(Event::Scroll { target, delta_x, delta_y });
+        }
+    }
+
+    pub fn on_resize(&mut self, width: f32, height: f32) {
+        self.tree.set_viewport(width, height);
+        self.tree.push_event(Event::Resize { width, height });
+    }
+
+    pub fn poll_events(&mut self) -> Box<[f64]> {
+        let events = self.tree.poll_events();
+        encode_events(&events)
+    }
 }
 
 fn apply_resolved_to_dom(html_el: &HtmlElement, el: &ResolvedElement) -> Result<(), JsValue> {
@@ -309,4 +391,54 @@ fn apply_resolved_to_dom(html_el: &HtmlElement, el: &ResolvedElement) -> Result<
     }
 
     Ok(())
+}
+
+/// Encode an event list into a flat f64 array for JS consumption.
+///
+/// Format per event:
+///   click:  [0, target_ffi, x, y]
+///   focus:  [1, target_ffi]
+///   blur:   [2, target_ffi]
+///   scroll: [7, target_ffi, delta_x, delta_y]
+///   resize: [8, width, height]
+///
+/// TextInput / Composition events are omitted here; Phase 5 wires those
+/// via a dedicated string-capable channel.
+fn encode_events(events: &[Event]) -> Box<[f64]> {
+    use slotmap::Key;
+    let mut out: Vec<f64> = Vec::with_capacity(events.len() * 4);
+    for event in events {
+        match event {
+            Event::Click { target, x, y } => {
+                out.push(0.0);
+                out.push(target.data().as_ffi() as f64);
+                out.push(*x as f64);
+                out.push(*y as f64);
+            }
+            Event::Focus(target) => {
+                out.push(1.0);
+                out.push(target.data().as_ffi() as f64);
+            }
+            Event::Blur(target) => {
+                out.push(2.0);
+                out.push(target.data().as_ffi() as f64);
+            }
+            Event::Scroll { target, delta_x, delta_y } => {
+                out.push(7.0);
+                out.push(target.data().as_ffi() as f64);
+                out.push(*delta_x as f64);
+                out.push(*delta_y as f64);
+            }
+            Event::Resize { width, height } => {
+                out.push(8.0);
+                out.push(*width as f64);
+                out.push(*height as f64);
+            }
+            Event::TextInput { .. }
+            | Event::CompositionStart { .. }
+            | Event::CompositionUpdate { .. }
+            | Event::CompositionEnd { .. } => {}
+        }
+    }
+    out.into_boxed_slice()
 }

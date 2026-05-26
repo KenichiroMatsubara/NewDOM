@@ -50,9 +50,19 @@ pub(crate) struct Element {
     pub text_layout: Option<TextLayout>,
 }
 
-/// Events drained by `poll_events`. Placeholder until input wiring lands.
+/// Events emitted by input wiring and drained by `poll_events`.
 #[derive(Clone, Debug)]
-pub enum Event {}
+pub enum Event {
+    Click { target: ElementId, x: f32, y: f32 },
+    Focus(ElementId),
+    Blur(ElementId),
+    TextInput { target: ElementId, text: String },
+    CompositionStart { target: ElementId, text: String },
+    CompositionUpdate { target: ElementId, text: String },
+    CompositionEnd { target: ElementId, text: String },
+    Scroll { target: ElementId, delta_x: f32, delta_y: f32 },
+    Resize { width: f32, height: f32 },
+}
 
 /// Fully-resolved per-element state after layout, keyed by stable ElementId.
 /// Used by HTML Mode to update DOM elements without going through SceneGraph.
@@ -81,6 +91,9 @@ pub struct ElementTree {
     pub(crate) layout_cx: LayoutContext<TextBrush>,
     pub(crate) viewport: (f32, f32),
     pub(crate) scene_cache: SceneGraph,
+    pub(crate) event_queue: Vec<Event>,
+    /// Absolute bounding rects (x, y, w, h) per element, refreshed after each layout pass.
+    pub(crate) layout_cache: HashMap<ElementId, (f32, f32, f32, f32)>,
 }
 
 impl ElementTree {
@@ -93,6 +106,8 @@ impl ElementTree {
             layout_cx: LayoutContext::new(),
             viewport: (800.0, 600.0),
             scene_cache: SceneGraph::new(),
+            event_queue: Vec::new(),
+            layout_cache: HashMap::new(),
         }
     }
 
@@ -282,6 +297,8 @@ impl ElementTree {
     pub fn render(&mut self) -> &SceneGraph {
         if let Some(root) = self.root {
             self.compute_layout(root);
+            self.layout_cache.clear();
+            cache_layout(&self.elements, &self.taffy, root, 0.0, 0.0, &mut self.layout_cache);
         }
         self.scene_cache = scene_build::build(self);
         &self.scene_cache
@@ -292,7 +309,19 @@ impl ElementTree {
     }
 
     pub fn poll_events(&mut self) -> Vec<Event> {
-        Vec::new()
+        std::mem::take(&mut self.event_queue)
+    }
+
+    /// Append an event to the outgoing queue.
+    pub fn push_event(&mut self, event: Event) {
+        self.event_queue.push(event);
+    }
+
+    /// Returns the deepest element whose bounding rect contains (x, y),
+    /// or None if no element is hit. Uses the layout from the last render pass.
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<ElementId> {
+        let root = self.root?;
+        hit_test_walk(&self.layout_cache, &self.elements, root, x, y)
     }
 
     /// Run layout and return every element with its absolute position and visual state.
@@ -300,6 +329,8 @@ impl ElementTree {
     pub fn resolved_elements(&mut self) -> Vec<(ElementId, ResolvedElement)> {
         if let Some(root) = self.root {
             self.compute_layout(root);
+            self.layout_cache.clear();
+            cache_layout(&self.elements, &self.taffy, root, 0.0, 0.0, &mut self.layout_cache);
         }
         let mut out = Vec::new();
         if let Some(root) = self.root {
@@ -448,6 +479,51 @@ fn walk_resolved(
     for &child in &el.children {
         walk_resolved(elements, taffy, child, x, y, out);
     }
+}
+
+fn cache_layout(
+    elements: &SlotMap<ElementId, Element>,
+    taffy: &TaffyTree<MeasureCtx>,
+    id: ElementId,
+    ox: f32,
+    oy: f32,
+    cache: &mut HashMap<ElementId, (f32, f32, f32, f32)>,
+) {
+    let el = match elements.get(id) {
+        Some(e) => e,
+        None => return,
+    };
+    let layout = match taffy.layout(el.taffy_node) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let x = ox + layout.location.x;
+    let y = oy + layout.location.y;
+    cache.insert(id, (x, y, layout.size.width, layout.size.height));
+    for &child in &el.children {
+        cache_layout(elements, taffy, child, x, y, cache);
+    }
+}
+
+fn hit_test_walk(
+    cache: &HashMap<ElementId, (f32, f32, f32, f32)>,
+    elements: &SlotMap<ElementId, Element>,
+    id: ElementId,
+    x: f32,
+    y: f32,
+) -> Option<ElementId> {
+    let &(ex, ey, ew, eh) = cache.get(&id)?;
+    if x < ex || y < ey || x >= ex + ew || y >= ey + eh {
+        return None;
+    }
+    let el = elements.get(id)?;
+    // Check children in reverse order so the topmost (last drawn) is hit first.
+    for &child in el.children.iter().rev() {
+        if let Some(hit) = hit_test_walk(cache, elements, child, x, y) {
+            return Some(hit);
+        }
+    }
+    Some(id)
 }
 
 fn apply_visual(visual: &mut Visual, prop: &StyleProp, text_dirty: &mut bool) {
