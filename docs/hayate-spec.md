@@ -283,11 +283,12 @@ Core は Adapter を知らない。新プラットフォームの追加コスト
 - IME: EditContext API を使用
 - 現時点では Chromium 系ブラウザが該当
 
-**HTML Mode**
+**HTML Mode**（ADR-0029）
 - 条件: WebGPU または EditContext API のいずれかが利用できない場合
-- 描画: Canvas Mode と同一の統一パイプライン（Element Layer → Taffy → Raw Layer）を経由し、Raw Layer の絶対座標出力を absolutely-positioned な `div` にマッピングして描画する。Canvas Mode との差異は最終的な描画先のみ（DOM vs GPU）
+- 描画: Hayate CSS プロパティをブラウザ CSS プロパティに直接マッピングし、レイアウト計算はブラウザの CSS エンジンに委ねる（Taffy を経由しない）。変更差分のみ CSS 書き込みを行い、ブラウザのインクリメンタル reflow を活用する
 - IME: ブラウザ native の動作に委ねる
-- Canvas Mode との差異はアダプターの最終出力のみ。コアのパイプラインは共通
+- Canvas Mode とはレンダリングパイプラインが異なるため、レイアウト結果の完全一致は保証しない。`transform` / `opacity` / `z-index` の組み合わせによるスタッキングコンテキストのズレは既知制限（ADR-0029）
+- 廃止: Taffy → absolutely-positioned div 方式（ADR-0016 元方式）は ADR-0029 により廃止済み
 
 不可視 `<textarea>` + compositionEvent による IME 実装は廃止済み（ADR-0016）。
 
@@ -487,6 +488,7 @@ wgpu は対象外。巨大すぎ、プラットフォーム対応の追従コス
 | DOM Adapter（createElement / addEventListener 等） | 廃止済み。WIT が唯一の公開インターフェース |
 | Browser Extension ユースケース | スコープ外 |
 | 不可視 textarea による IME | 廃止済み（ADR-0016）。EditContext 専用 |
+| HTML Mode の absolutely-positioned div 方式 | 廃止済み（ADR-0029）。ブラウザ CSS レイアウト方式に移行 |
 | 独自 C ABI（newdom.h / cbindgen） | 廃止済み（ADR-0015）。WIT から wit-bindgen-c が生成 |
 | 状態管理 | 上層（Hayabusa 等）の仕事 |
 | コンポーネントシステム | 上層（Hayabusa 等）の仕事 |
