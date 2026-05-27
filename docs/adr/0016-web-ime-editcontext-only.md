@@ -1,5 +1,9 @@
 # Web IME は EditContext API 専用とし、非対応ブラウザは HTML Mode で対応する
 
+> ⚠️ **部分的に上書き済み**: HTML Mode の描画アプローチ（Taffy → absolutely-positioned div）は
+> **ADR-0029** によって廃止された。HTML Mode の現行アプローチはブラウザ CSS レイアウト方式。
+> IME・モード選択・Canvas Mode に関する決定は本 ADR が引き続き有効。
+
 ## Context
 
 Hayate の Web 実装（`hayate-adapter-web`）において IME 入力とレンダリングモードをどう扱うかを決定する必要がある。
