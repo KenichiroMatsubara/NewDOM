@@ -44,7 +44,7 @@ IME 入力・クリップボード・raw 入力イベント変換を担い、Hay
 _Avoid_: Runtime, Host, Surface Adapter
 
 **Canvas Mode**:
-`hayate-adapter-web` の動作モードの一つ。Vello + wgpu（WebGPU）で全 UI を Canvas に GPU 描画し、IME に EditContext API を使用する。WebGPU（`navigator.gpu`）と EditContext API の両方が利用可能な場合に自動選択される。現時点では Chromium 系ブラウザが該当する。
+`hayate-adapter-web` の動作モードの一つ。Vello + wgpu（WebGPU）で全 UI を Canvas に GPU 描画し、IME に EditContext API を使用する。WebGPU（`navigator.gpu`）と EditContext API の両方が利用可能な場合に自動選択される。現時点では Chromium 系ブラウザが該当する。レイアウト（Taffy）・描画（Vello）・フォント（バンドルフォント）がネイティブビルドと同一コード・同一データを使用するため、アプリがフォントをバンドルする限りネイティブとのピクセル完全一致が保証される。
 
 **HTML Mode**:
 `hayate-adapter-web` の動作モードの一つ。WebGPU または EditContext API のいずれかが利用できない場合に自動選択される。Hayate CSS プロパティをブラウザの CSS プロパティに直接マッピングし、レイアウト計算はブラウザの CSS エンジンに委ねる（Taffy は経由しない）。Canvas Mode とはレンダリングパイプラインが異なるため、レイアウト結果の完全一致は保証されないが、開発時の UI 確認用途には十分な精度を持つ。IME はブラウザ native の動作に委ねる。モード選択はランタイム自動検出で行い、アプリ側は意識しない。
