@@ -51,8 +51,8 @@ _Avoid_: Runtime, Host, Surface Adapter
 _Avoid_: フォールバック（劣化の含意を避けるため）、DOM Mode、absolutely-positioned div 方式
 
 **Tsubame（燕）**:
-JS/TS ユーザー向けの純粋 JS フレームワーク。プラットフォームのネイティブ JS エンジン（ブラウザ: V8/SpiderMonkey、モバイル: Hermes 等）上で動作し、Hermes 等の JS ランタイムを自身にバンドルしない。DOM Mode と Canvas Mode の二つの動作モードを持ち、ランタイムまたはビルド時に自動選択する。Hayabusa とは独立した別フレームワークであり、Hayabusa の Signal ランタイムを経由しない。Hayate コアは Tsubame の存在を知らない。
-_Avoid_: Hayabusa の JS アダプタ、Hayabusa のラッパー
+JS/TS ユーザー向けの純粋 JS フレームワーク。「React Native on Hayate」に相当するポジション。`.tsx` コンポーネント形式を採用し、JS で実装された独自 Signal システムを持つ。プラットフォームのネイティブ JS エンジン（ブラウザ: V8/SpiderMonkey、モバイル: Hermes 等）上で動作し、JS ランタイムを自身にバンドルしない。DOM Mode と Canvas Mode の二つの動作モードを持ち、ランタイムまたはビルド時に自動選択する。Hayabusa・Hayate コアのいずれも Tsubame の存在を知らない。Hayabusa とは完全に独立した別フレームワークであり、コンポーネント形式・Signal 実装・ビルドパイプラインのいずれも共有しない。
+_Avoid_: Hayabusa の JS アダプタ、Hayabusa のラッパー、Hayabusa のサブセット
 
 **Tsubame DOM Mode**:
 Tsubame の動作モードの一つ。ビルド時に HTML を生成し、ランタイムでは DOM を直接操作する。Hayate（WASM）を一切使用しない。JS→WASM 境界が存在しない。Hayate の HTML Mode（Hayate が DOM 要素で描画するモード）とは別概念であり、Hayate が関与しない点が根本的に異なる。
