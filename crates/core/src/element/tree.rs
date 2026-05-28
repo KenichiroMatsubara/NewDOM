@@ -80,6 +80,10 @@ pub(crate) struct Element {
 }
 
 /// Events emitted by input wiring and drained by `poll_events`.
+///
+/// Naming follows ADR-0031: semantic state transitions (`hover-enter`,
+/// `active-start`, …) instead of physical Pointer Events names. The single
+/// exception is `PointerMove`, which is a coordinate stream with no target.
 #[derive(Clone, Debug)]
 pub enum Event {
     Click { target: ElementId, x: f32, y: f32 },
@@ -91,9 +95,11 @@ pub enum Event {
     CompositionEnd { target: ElementId, text: String },
     Scroll { target: ElementId, delta_x: f32, delta_y: f32 },
     Resize { width: f32, height: f32 },
-    PointerUp { target: ElementId, x: f32, y: f32 },
-    PointerEnter { target: ElementId },
-    PointerLeave { target: ElementId },
+    HoverEnter { target: ElementId },
+    HoverLeave { target: ElementId },
+    ActiveStart { target: ElementId },
+    ActiveEnd { target: ElementId },
+    PointerMove { x: f32, y: f32 },
     KeyDown { target: ElementId, key: String, modifiers: u32 },
 }
 
@@ -134,6 +140,12 @@ pub struct ElementTree {
     pub(crate) event_queue: Vec<Event>,
     /// Absolute bounding rects (x, y, w, h) per element, refreshed after each layout pass.
     pub(crate) layout_cache: HashMap<ElementId, (f32, f32, f32, f32)>,
+    /// Element that owns the text-input cursor blink. Tracked here (not in the
+    /// adapter) so `render(timestamp_ms)` can advance the blink itself per ADR-0032.
+    pub(crate) focused_element: Option<ElementId>,
+    /// Wall-clock millis (host-provided) of the last cursor-visibility toggle.
+    /// `None` until the first frame after focus; reset on focus change.
+    pub(crate) last_cursor_toggle_ms: Option<f64>,
 }
 
 fn init_bundled_fonts(font_cx: &mut FontContext) {
@@ -171,6 +183,8 @@ impl ElementTree {
             scene_cache: SceneGraph::new(),
             event_queue: Vec::new(),
             layout_cache: HashMap::new(),
+            focused_element: None,
+            last_cursor_toggle_ms: None,
         }
     }
 
@@ -304,6 +318,42 @@ impl ElementTree {
         }
     }
 
+    /// Mark `id` as the focused element. Used by `render(timestamp_ms)` to
+    /// drive cursor blink internally (ADR-0032). Also shows the cursor for
+    /// TextInput targets so the first frame after focus draws it solid.
+    pub fn element_focus(&mut self, id: ElementId) {
+        if self.focused_element == Some(id) {
+            return;
+        }
+        if let Some(prev) = self.focused_element {
+            if let Some(el) = self.elements.get_mut(prev) {
+                el.cursor_visible = false;
+            }
+        }
+        if let Some(el) = self.elements.get_mut(id) {
+            el.cursor_visible = true;
+        }
+        self.focused_element = Some(id);
+        self.last_cursor_toggle_ms = None;
+    }
+
+    /// Clear focus from `id` (no-op if `id` is not currently focused).
+    pub fn element_blur(&mut self, id: ElementId) {
+        if self.focused_element != Some(id) {
+            return;
+        }
+        if let Some(el) = self.elements.get_mut(id) {
+            el.cursor_visible = false;
+        }
+        self.focused_element = None;
+        self.last_cursor_toggle_ms = None;
+    }
+
+    /// Currently-focused element, if any.
+    pub fn focused_element(&self) -> Option<ElementId> {
+        self.focused_element
+    }
+
     /// Set the font family (by name) for an element. The family must first be registered via
     /// `register_font`, or be a system font available in the default FontContext.
     pub fn element_set_font_family(&mut self, id: ElementId, family: &str) {
@@ -342,6 +392,15 @@ impl ElementTree {
             ..Default::default()
         };
         self.font_cx.collection.register_fonts(blob, Some(override_info));
+    }
+
+    /// Register a font from raw bytes using the family name(s) embedded in the
+    /// font file itself. Backs the WIT `element-load-font` export.
+    pub fn register_font_bytes(&mut self, bytes: Vec<u8>) {
+        use std::sync::Arc;
+        use vello::peniko::Blob;
+        let blob = Blob::new(Arc::new(bytes));
+        self.font_cx.collection.register_fonts(blob, None);
     }
 
     /// Set the IME preedit for a TextInput (in-progress, not yet committed).
@@ -523,6 +582,10 @@ impl ElementTree {
             if let Some(el) = self.elements.remove(node) {
                 let _ = self.taffy.remove(el.taffy_node);
             }
+            if self.focused_element == Some(node) {
+                self.focused_element = None;
+                self.last_cursor_toggle_ms = None;
+            }
         }
         if self.root == Some(id) {
             self.root = None;
@@ -545,7 +608,12 @@ impl ElementTree {
     }
 
     /// Run layout, lower the element tree into the scene graph, and return it.
-    pub fn render(&mut self) -> &SceneGraph {
+    ///
+    /// `timestamp_ms` is a monotonic host clock (e.g. `performance.now()`); it
+    /// drives the focused TextInput's cursor blink without exposing
+    /// `tick_cursor` to the host (ADR-0032).
+    pub fn render(&mut self, timestamp_ms: f64) -> &SceneGraph {
+        self.tick_cursor_blink(timestamp_ms);
         if let Some(root) = self.root {
             self.compute_layout(root);
             self.layout_cache.clear();
@@ -553,6 +621,31 @@ impl ElementTree {
         }
         self.scene_cache = scene_build::build(self);
         &self.scene_cache
+    }
+
+    /// Toggle the focused element's cursor every 500 ms. Idempotent if called
+    /// multiple times in the same frame, and a no-op when nothing is focused.
+    fn tick_cursor_blink(&mut self, timestamp_ms: f64) {
+        let focused = match self.focused_element {
+            Some(id) => id,
+            None => return,
+        };
+        match self.last_cursor_toggle_ms {
+            None => {
+                // First frame after focus: keep cursor visible, start the clock.
+                self.last_cursor_toggle_ms = Some(timestamp_ms);
+                if let Some(el) = self.elements.get_mut(focused) {
+                    el.cursor_visible = true;
+                }
+            }
+            Some(prev) if timestamp_ms - prev >= 500.0 => {
+                self.last_cursor_toggle_ms = Some(timestamp_ms);
+                if let Some(el) = self.elements.get_mut(focused) {
+                    el.cursor_visible = !el.cursor_visible;
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn scene_graph(&self) -> &SceneGraph {

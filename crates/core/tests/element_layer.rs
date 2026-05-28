@@ -29,7 +29,7 @@ fn set_style_routes_layout_and_visual() {
             StyleProp::BackgroundColor(Color::new(1.0, 0.0, 0.0, 1.0)),
         ],
     );
-    let sg = tree.render();
+    let sg = tree.render(0.0);
     // Expect a single Rect node with the layout-computed size.
     let mut found = false;
     for (_, n) in sg.iter() {
@@ -76,7 +76,7 @@ fn flex_row_positions_children_with_gap() {
         );
     }
 
-    let sg = tree.render();
+    let sg = tree.render(0.0);
     let mut xs: Vec<f32> = sg
         .iter()
         .filter_map(|(_, n)| match &n.kind {
@@ -108,7 +108,7 @@ fn text_element_produces_text_run() {
     tree.element_set_style(text, &[StyleProp::FontSize(24.0)]);
     tree.element_set_text(text, "Hello");
     assert_eq!(tree.element_get_text(text), "Hello");
-    let sg = tree.render();
+    let sg = tree.render(0.0);
     let has_text_run = sg
         .iter()
         .any(|(_, n)| matches!(&n.kind, NodeKind::TextRun { .. }));
@@ -141,7 +141,7 @@ fn scene_build_walks_absolute_coordinates() {
         ],
     );
     tree.element_append_child(root, child);
-    let sg = tree.render();
+    let sg = tree.render(0.0);
     let mut child_pos = None;
     for (_, n) in sg.iter() {
         if let NodeKind::Rect { x, y, width, height, color, .. } = &n.kind {
@@ -180,7 +180,7 @@ fn scroll_view_emits_clip_node() {
         ],
     );
     tree.element_append_child(root, content);
-    let sg = tree.render();
+    let sg = tree.render(0.0);
 
     let clip_count = sg.iter().filter(|(_, n)| matches!(n.kind, NodeKind::Clip { .. })).count();
     assert_eq!(clip_count, 1, "ScrollView should emit exactly one Clip node");
@@ -209,7 +209,7 @@ fn scroll_view_clip_contains_content_as_child() {
 
     // Apply a scroll offset and verify it produces a Group inside the Clip.
     tree.element_set_scroll_offset(root, 0.0, 50.0);
-    let sg = tree.render();
+    let sg = tree.render(0.0);
 
     // Find the Clip node — it should be in the roots list.
     let clip_root = sg
@@ -248,7 +248,7 @@ fn transform_emits_group_node() {
     // Identity transform — Group node should appear, Rect should be its child.
     let identity = [1.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0];
     tree.element_set_transform(root, Some(identity));
-    let sg = tree.render();
+    let sg = tree.render(0.0);
 
     let mut group_count = 0usize;
     let mut rect_count = 0usize;
@@ -310,7 +310,7 @@ fn z_index_controls_paint_order() {
             StyleProp::ZIndex(0),
         ],
     );
-    let sg = tree.render();
+    let sg = tree.render(0.0);
     // Collect paint order: look at first-component of color for each 50×50 rect.
     let order: Vec<f32> = sg
         .iter()
@@ -343,7 +343,7 @@ fn hit_test_returns_deepest_element() {
         &[StyleProp::Width(Dimension::px(100.0)), StyleProp::Height(Dimension::px(100.0))],
     );
     tree.element_append_child(root, child);
-    tree.render();
+    tree.render(0.0);
 
     // Point inside child → child wins (deepest)
     assert_eq!(tree.hit_test(50.0, 50.0), Some(child));
@@ -363,7 +363,7 @@ fn push_and_poll_events() {
         root,
         &[StyleProp::Width(Dimension::px(200.0)), StyleProp::Height(Dimension::px(200.0))],
     );
-    tree.render();
+    tree.render(0.0);
 
     tree.push_event(Event::Click { target: root, x: 10.0, y: 20.0 });
     tree.push_event(Event::Resize { width: 300.0, height: 400.0 });
@@ -387,7 +387,7 @@ fn scroll_event_targets_hit_element() {
         root,
         &[StyleProp::Width(Dimension::px(300.0)), StyleProp::Height(Dimension::px(300.0))],
     );
-    tree.render();
+    tree.render(0.0);
 
     let target = tree.hit_test(100.0, 100.0).expect("no hit");
     tree.push_event(Event::Scroll { target, delta_x: 0.0, delta_y: 20.0 });
@@ -565,7 +565,7 @@ fn cursor_visible_on_focus_hidden_on_blur() {
     tree.set_viewport(200.0, 200.0);
     tree.element_set_style(input, &[StyleProp::Width(Dimension::px(200.0)), StyleProp::Height(Dimension::px(40.0))]);
 
-    let sg = tree.render();
+    let sg = tree.render(0.0);
     // When cursor is visible and text_content is empty, a fallback Rect cursor is emitted.
     let cursor_rects: Vec<_> = sg
         .iter()
@@ -577,7 +577,7 @@ fn cursor_visible_on_focus_hidden_on_blur() {
     assert!(!cursor_rects.is_empty(), "cursor rect should be emitted when cursor_visible=true");
 
     tree.element_set_cursor_visible(input, false);
-    let sg = tree.render();
+    let sg = tree.render(0.0);
     let cursor_rects: Vec<_> = sg
         .iter()
         .filter_map(|(_, n)| match &n.kind {
@@ -586,4 +586,89 @@ fn cursor_visible_on_focus_hidden_on_blur() {
         })
         .collect();
     assert!(cursor_rects.is_empty(), "cursor rect should not be emitted when cursor_visible=false");
+}
+
+// ── ADR-0032: render(timestamp_ms) drives cursor blink internally ────────
+
+fn count_cursor_rects(sg: &hayate_core::SceneGraph) -> usize {
+    sg.iter()
+        .filter(|(_, n)| matches!(&n.kind, NodeKind::Rect { width, .. } if (*width - 1.5).abs() < 0.1))
+        .count()
+}
+
+#[test]
+fn render_timestamp_toggles_focused_cursor_every_500ms() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+    tree.set_viewport(200.0, 200.0);
+    tree.element_set_style(
+        input,
+        &[StyleProp::Width(Dimension::px(200.0)), StyleProp::Height(Dimension::px(40.0))],
+    );
+
+    tree.element_focus(input);
+    // First frame: cursor visible, blink clock starts.
+    assert_eq!(count_cursor_rects(tree.render(1000.0)), 1, "frame 0: visible");
+    // Same frame budget — no toggle yet.
+    assert_eq!(count_cursor_rects(tree.render(1499.0)), 1, "<500ms: still visible");
+    // Crossed 500ms threshold — toggle to hidden.
+    assert_eq!(count_cursor_rects(tree.render(1500.0)), 0, ">=500ms: hidden");
+    // Another 500ms — back to visible.
+    assert_eq!(count_cursor_rects(tree.render(2000.0)), 1, "+500ms: visible again");
+}
+
+#[test]
+fn render_does_not_blink_when_nothing_is_focused() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+    tree.set_viewport(200.0, 200.0);
+    tree.element_set_style(
+        input,
+        &[StyleProp::Width(Dimension::px(200.0)), StyleProp::Height(Dimension::px(40.0))],
+    );
+    // No focus → cursor stays hidden no matter how much time passes.
+    assert_eq!(count_cursor_rects(tree.render(0.0)), 0);
+    assert_eq!(count_cursor_rects(tree.render(10_000.0)), 0);
+}
+
+#[test]
+fn blur_stops_blink_and_hides_cursor() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+    tree.set_viewport(200.0, 200.0);
+    tree.element_set_style(
+        input,
+        &[StyleProp::Width(Dimension::px(200.0)), StyleProp::Height(Dimension::px(40.0))],
+    );
+    tree.element_focus(input);
+    assert_eq!(count_cursor_rects(tree.render(0.0)), 1);
+    tree.element_blur(input);
+    assert_eq!(count_cursor_rects(tree.render(600.0)), 0, "blur hides cursor");
+    assert_eq!(count_cursor_rects(tree.render(1200.0)), 0, "blur stops blink");
+}
+
+// ── ADR-0031: semantic event variant smoke tests ─────────────────────────
+
+#[test]
+fn semantic_event_variants_roundtrip_through_poll() {
+    let mut tree = ElementTree::new();
+    let target = tree.element_create(ElementKind::View);
+    tree.set_root(target);
+
+    tree.push_event(Event::HoverEnter { target });
+    tree.push_event(Event::ActiveStart { target });
+    tree.push_event(Event::ActiveEnd { target });
+    tree.push_event(Event::HoverLeave { target });
+    tree.push_event(Event::PointerMove { x: 12.5, y: 34.0 });
+
+    let events = tree.poll_events();
+    assert_eq!(events.len(), 5);
+    assert!(matches!(&events[0], Event::HoverEnter { .. }));
+    assert!(matches!(&events[1], Event::ActiveStart { .. }));
+    assert!(matches!(&events[2], Event::ActiveEnd { .. }));
+    assert!(matches!(&events[3], Event::HoverLeave { .. }));
+    assert!(matches!(&events[4], Event::PointerMove { x, y } if (*x - 12.5).abs() < 1e-3 && (*y - 34.0).abs() < 1e-3));
 }

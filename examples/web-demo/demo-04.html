@@ -271,7 +271,10 @@
 
     function render() {
       if (!renderer) return;
-      try { renderer.render(0.04, 0.06, 0.1); } catch(e) { console.error('[hayate] render:', e); }
+      try {
+        renderer.set_background_color(0.04, 0.06, 0.1);
+        renderer.render(performance.now());
+      } catch(e) { console.error('[hayate] render:', e); }
     }
 
     function buildScene() {

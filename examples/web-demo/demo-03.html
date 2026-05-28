@@ -276,7 +276,10 @@
     function render() {
       if (!renderer) return;
       const [r,g,b] = bgColor();
-      try { renderer.render(r, g, b); } catch(e) { console.error('[hayate] render:', e); }
+      try {
+        renderer.set_background_color(r, g, b);
+        renderer.render(performance.now());
+      } catch(e) { console.error('[hayate] render:', e); }
     }
 
     function buildScene() {
@@ -395,7 +398,8 @@
     });
     test('render() — テキストシーン', () => {
       const [r,g,b] = bgColor();
-      renderer.render(r, g, b);
+      renderer.set_background_color(r, g, b);
+      renderer.render(performance.now());
     }, webgpuOk ? '→ Canvas Mode: テキストが見えない場合は Vello/Parley テキスト未実装' : '→ HTML Mode: テキストはブラウザ CSS で描画');
 
     // ── コントロール配線 ───────────────────────────────────────────────────

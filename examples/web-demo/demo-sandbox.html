@@ -455,8 +455,16 @@
     function render() {
       if (!renderer) return;
       const [r, g, b] = bgColor();
-      try { renderer.render(r, g, b); }
-      catch (e) { console.error('[hayate] render:', e); }
+      try {
+        // Element Layer (WIT v2): timestamp-only render(), bg color via setter.
+        // Raw Layer: still `render(bg_r, bg_g, bg_b)` per its own WIT signature.
+        if (mode === 'el') {
+          renderer.set_background_color(r, g, b);
+          renderer.render(performance.now());
+        } else {
+          renderer.render(r, g, b);
+        }
+      } catch (e) { console.error('[hayate] render:', e); }
     }
 
     // ── Initial Element Layer scene ───────────────────────────────────────

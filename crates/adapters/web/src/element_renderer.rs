@@ -58,6 +58,10 @@ fn kind_from_u32(v: u32) -> Result<ElementKind, JsValue> {
 #[wasm_bindgen] pub fn style_tag_z_index() -> u32 { crate::style_packet::TAG_Z_INDEX }
 
 // ── Event kind constants (exposed to JS) ─────────────────────────────────
+// Discriminants match `encode_events` below. Naming follows ADR-0031:
+// semantic state transitions (`hover-*`, `active-*`) rather than physical
+// pointer events. `PointerMove` is the only physical-name carryover, since
+// it has no target.
 
 #[wasm_bindgen] pub fn event_kind_click()               -> f64 { 0.0 }
 #[wasm_bindgen] pub fn event_kind_focus()               -> f64 { 1.0 }
@@ -68,10 +72,12 @@ fn kind_from_u32(v: u32) -> Result<ElementKind, JsValue> {
 #[wasm_bindgen] pub fn event_kind_composition_end()     -> f64 { 6.0 }
 #[wasm_bindgen] pub fn event_kind_scroll()              -> f64 { 7.0 }
 #[wasm_bindgen] pub fn event_kind_resize()              -> f64 { 8.0 }
-#[wasm_bindgen] pub fn event_kind_pointer_up()          -> f64 { 9.0 }
-#[wasm_bindgen] pub fn event_kind_pointer_enter()       -> f64 { 10.0 }
-#[wasm_bindgen] pub fn event_kind_pointer_leave()       -> f64 { 11.0 }
+#[wasm_bindgen] pub fn event_kind_active_end()          -> f64 { 9.0 }
+#[wasm_bindgen] pub fn event_kind_hover_enter()         -> f64 { 10.0 }
+#[wasm_bindgen] pub fn event_kind_hover_leave()         -> f64 { 11.0 }
 #[wasm_bindgen] pub fn event_kind_key_down()            -> f64 { 12.0 }
+#[wasm_bindgen] pub fn event_kind_active_start()        -> f64 { 13.0 }
+#[wasm_bindgen] pub fn event_kind_pointer_move()        -> f64 { 14.0 }
 
 // ── Modifier key bitmask constants (exposed to JS) ───────────────────────
 // Match KeyboardEvent.getModifierState flags for JS interop.
@@ -102,9 +108,13 @@ pub fn element_kind_scroll_view() -> u32 { 5 }
 pub struct HayateElementRenderer {
     gpu: GpuSurface,
     tree: ElementTree,
-    focused_element: Option<ElementId>,
     hovered_element: Option<ElementId>,
+    active_element: Option<ElementId>,
     last_pointer_pos: Option<(f32, f32)>,
+    /// wgpu surface clear colour. Decoupled from `render(timestamp_ms)` because
+    /// the WIT `render` signature no longer carries it (ADR-0032 keeps render
+    /// timestamp-only); call `set_background_color` separately.
+    background: AlphaColor<Srgb>,
     /// Deferred mutations applied at the start of every `render()` (ADR-0030).
     pending: Vec<Command>,
 }
@@ -120,11 +130,20 @@ impl HayateElementRenderer {
         Ok(Self {
             gpu,
             tree,
-            focused_element: None,
             hovered_element: None,
+            active_element: None,
             last_pointer_pos: None,
+            background: AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 1.0]),
             pending: Vec::new(),
         })
+    }
+
+    /// Set the wgpu surface clear colour used by every subsequent `render()`.
+    /// Not part of the WIT — it complements the timestamp-only `render` from
+    /// ADR-0032 so demos can still drive their colour pickers without
+    /// re-issuing the colour each frame.
+    pub fn set_background_color(&mut self, r: f64, g: f64, b: f64) {
+        self.background = AlphaColor::<Srgb>::new([r as f32, g as f32, b as f32, 1.0]);
     }
 
     pub fn set_viewport(&mut self, width: f32, height: f32) {
@@ -163,17 +182,22 @@ impl HayateElementRenderer {
         Ok(())
     }
 
-    /// Set a 2D affine transform on the element. Pass exactly 6 f64 coefficients [a,b,c,d,e,f],
-    /// or an empty slice to clear.
-    pub fn element_set_transform(&mut self, id: f64, matrix: &[f64]) {
-        let m = if matrix.len() == 6 {
-            Some([matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]])
-        } else {
-            None
-        };
+    /// Apply a 2D affine transform on top of layout. Arguments map to the WIT
+    /// `affine` record fields (column-major: xx,yx,xy,yy,dx,dy). Pass identity
+    /// (1,0,0,1,0,0) to neutralise an earlier transform.
+    pub fn element_set_transform(
+        &mut self,
+        id: f64,
+        xx: f64,
+        yx: f64,
+        xy: f64,
+        yy: f64,
+        dx: f64,
+        dy: f64,
+    ) {
         self.pending.push(Command::SetTransform {
             id: element_id_from_f64(id),
-            matrix: m,
+            matrix: Some([xx, yx, xy, yy, dx, dy]),
         });
     }
 
@@ -203,16 +227,26 @@ impl HayateElementRenderer {
         self.tree.element_get_text(element_id_from_f64(id))
     }
 
+    /// Return the element's absolute bounds [x, y, width, height] from the
+    /// most recent layout pass. Zeroed when the id is unknown or the element
+    /// has not been laid out yet. WIT-aligned (`element-get-bounds`).
+    pub fn element_get_bounds(&self, id: f64) -> Box<[f32]> {
+        let eid = element_id_from_f64(id);
+        let (x, y, w, h) = self.tree.element_layout_rect(eid).unwrap_or((0.0, 0.0, 0.0, 0.0));
+        vec![x, y, w, h].into_boxed_slice()
+    }
+
     pub fn set_root(&mut self, id: f64) {
         self.pending.push(Command::SetRoot { id: element_id_from_f64(id) });
     }
 
-    pub fn render(&mut self, bg_r: f64, bg_g: f64, bg_b: f64) -> Result<(), JsValue> {
+    /// Drain pending commands, advance cursor blink, run layout, and present.
+    /// `timestamp_ms` should be a monotonic clock (e.g. `performance.now()`).
+    pub fn render(&mut self, timestamp_ms: f64) -> Result<(), JsValue> {
         self.flush_pending();
-        let base_color = AlphaColor::<Srgb>::new([bg_r as f32, bg_g as f32, bg_b as f32, 1.0]);
-        let sg = self.tree.render();
+        let sg = self.tree.render(timestamp_ms);
         let scene = vello_bridge::build_scene(sg);
-        self.gpu.present(&scene, base_color)
+        self.gpu.present(&scene, self.background)
     }
 
     /// Fetch an image (PNG / JPEG / WebP) from `url` and attach it to the Image element.
@@ -228,42 +262,51 @@ impl HayateElementRenderer {
         let hit = self.tree.hit_test(x, y);
         if let Some(target) = hit {
             self.tree.push_event(Event::Click { target, x, y });
-            if self.focused_element != hit {
-                if let Some(prev) = self.focused_element {
+            self.tree.push_event(Event::ActiveStart { target });
+            self.active_element = Some(target);
+            if self.tree.focused_element() != hit {
+                if let Some(prev) = self.tree.focused_element() {
                     self.tree.push_event(Event::Blur(prev));
-                    self.tree.element_set_cursor_visible(prev, false);
                 }
-                self.focused_element = hit;
+                self.tree.element_focus(target);
                 self.tree.push_event(Event::Focus(target));
-                self.tree.element_set_cursor_visible(target, true);
             }
-        } else if let Some(prev) = self.focused_element.take() {
+        } else if let Some(prev) = self.tree.focused_element() {
             self.tree.push_event(Event::Blur(prev));
-            self.tree.element_set_cursor_visible(prev, false);
+            self.tree.element_blur(prev);
         }
     }
 
     pub fn on_pointer_up(&mut self, x: f32, y: f32) {
-        if let Some(target) = self.tree.hit_test(x, y) {
-            self.tree.push_event(Event::PointerUp { target, x, y });
+        // `active-end` reports the element that received `active-start`, even if
+        // the pointer drifted off it before release (ADR-0031: drag-then-release
+        // is one active session). The release coordinate has no field on the
+        // event variant — callers that need it should track PointerMove.
+        let _ = (x, y);
+        let target = self.active_element.take().or_else(|| self.tree.hit_test(x, y));
+        if let Some(target) = target {
+            self.tree.push_event(Event::ActiveEnd { target });
         }
     }
 
     pub fn on_pointer_move(&mut self, x: f32, y: f32) {
-        // Skip if position hasn't moved by at least 1px (P3 throttle).
+        // Skip when the pointer hasn't moved by at least 1px (P3 throttle from ADR-0019).
         if let Some((lx, ly)) = self.last_pointer_pos {
             if (x - lx).abs() < 1.0 && (y - ly).abs() < 1.0 {
                 return;
             }
         }
         self.last_pointer_pos = Some((x, y));
+        // Per ADR-0031 `pointer-move` is a target-less coordinate stream; emit
+        // alongside any hover state changes so dragging code can track motion.
+        self.tree.push_event(Event::PointerMove { x, y });
         let hit = self.tree.hit_test(x, y);
         if hit != self.hovered_element {
             if let Some(prev) = self.hovered_element {
-                self.tree.push_event(Event::PointerLeave { target: prev });
+                self.tree.push_event(Event::HoverLeave { target: prev });
             }
             if let Some(cur) = hit {
-                self.tree.push_event(Event::PointerEnter { target: cur });
+                self.tree.push_event(Event::HoverEnter { target: cur });
             }
             self.hovered_element = hit;
         }
@@ -332,24 +375,30 @@ impl HayateElementRenderer {
         Ok(())
     }
 
-    /// Paste text into the currently focused element. JS calls this from the paste event handler.
-    pub fn on_clipboard_paste(&mut self, text: &str) {
-        if let Some(focused) = self.focused_element {
-            self.tree.element_append_text_content(focused, text);
-            self.tree.push_event(Event::TextInput { target: focused, text: text.to_string() });
-        }
+    /// Load a font using the family name embedded in the font file. Backs the
+    /// WIT `element-load-font` export.
+    pub fn element_load_font(&mut self, data: &[u8]) {
+        self.tree.register_font_bytes(data.to_vec());
+    }
+
+    /// Deliver pasted text to a specific TextInput element. WIT-aligned
+    /// (`element-paste`); replaces the implicit-focus `on_clipboard_paste`.
+    pub fn element_paste(&mut self, id: f64, text: &str) {
+        let eid = element_id_from_f64(id);
+        self.tree.element_append_text_content(eid, text);
+        self.tree.push_event(Event::TextInput { target: eid, text: text.to_string() });
     }
 
     /// Return the focused element's id (as f64), or 0.0 if nothing is focused.
     /// JS can use this with `element_get_text_content` to implement copy/cut.
     pub fn focused_element_id(&self) -> f64 {
-        self.focused_element.map(element_id_to_f64).unwrap_or(0.0)
+        self.tree.focused_element().map(element_id_to_f64).unwrap_or(0.0)
     }
 
     /// Handle a key press on the focused element.
     /// `key` is KeyboardEvent.key; `modifiers` is a bitmask of modifier_shift/ctrl/alt/meta.
     pub fn on_key_down(&mut self, key: &str, modifiers: u32) {
-        let focused = match self.focused_element {
+        let focused = match self.tree.focused_element() {
             Some(id) => id,
             None => return,
         };
@@ -364,15 +413,6 @@ impl HayateElementRenderer {
             _ => {}
         }
         self.tree.push_event(Event::KeyDown { target: focused, key: key.to_string(), modifiers });
-    }
-
-    /// Toggle the cursor visibility for blinking. JS calls this from requestAnimationFrame
-    /// with the current timestamp; the cursor alternates every 500 ms.
-    pub fn tick_cursor(&mut self, timestamp_ms: f64) {
-        if let Some(focused) = self.focused_element {
-            let visible = ((timestamp_ms as u64) / 500) % 2 == 0;
-            self.tree.element_set_cursor_visible(focused, visible);
-        }
     }
 
     /// Called by JS when the user types printable text into the focused TextInput.
@@ -456,12 +496,13 @@ impl HayateElementRenderer {
                     self.tree.element_insert_before(parent, child, before);
                 }
                 Command::Remove { id } => {
-                    if self.focused_element == Some(id) {
-                        self.focused_element = None;
-                    }
                     if self.hovered_element == Some(id) {
                         self.hovered_element = None;
                     }
+                    if self.active_element == Some(id) {
+                        self.active_element = None;
+                    }
+                    // The tree clears its own focused_element on remove.
                     self.tree.element_remove(id);
                 }
                 Command::SetRoot { id } => self.tree.set_root(id),
@@ -500,6 +541,11 @@ pub struct HayateElementHtmlRenderer {
     event_queue: Vec<Event>,
     focused_element: Option<ElementId>,
     hovered_element: Option<ElementId>,
+    active_element: Option<ElementId>,
+    /// Container CSS background colour. HTML Mode delegates rendering to the
+    /// browser; `set_background_color` stores it and `render(timestamp_ms)`
+    /// applies it once at flush time.
+    background_css: String,
     /// Deferred mutations applied at the start of every `render()` (ADR-0030).
     pending: Vec<Command>,
 }
@@ -517,8 +563,22 @@ impl HayateElementHtmlRenderer {
             event_queue: Vec::new(),
             focused_element: None,
             hovered_element: None,
+            active_element: None,
+            background_css: "rgb(0,0,0)".to_string(),
             pending: Vec::new(),
         })
+    }
+
+    /// Store the container's CSS background colour for the next `render()`.
+    /// Pairs with `HayateElementRenderer::set_background_color` so demos can
+    /// drive either mode with the same setter.
+    pub fn set_background_color(&mut self, r: f64, g: f64, b: f64) {
+        self.background_css = format!(
+            "rgb({},{},{})",
+            (r * 255.0) as u8,
+            (g * 255.0) as u8,
+            (b * 255.0) as u8,
+        );
     }
 
     /// Viewport is browser-managed in HTML Mode; this is kept for API parity
@@ -568,16 +628,21 @@ impl HayateElementHtmlRenderer {
     }
 
     /// Queue a 2D affine transform update applied as CSS
-    /// `transform: matrix(a,b,c,d,e,f)`, or cleared when an empty slice is passed.
-    pub fn element_set_transform(&mut self, id: f64, matrix: &[f64]) {
-        let m = if matrix.len() == 6 {
-            Some([matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]])
-        } else {
-            None
-        };
+    /// `transform: matrix(xx,yx,xy,yy,dx,dy)`. Matches the WIT `affine` record
+    /// — identity is (1,0,0,1,0,0); there is no clear path.
+    pub fn element_set_transform(
+        &mut self,
+        id: f64,
+        xx: f64,
+        yx: f64,
+        xy: f64,
+        yy: f64,
+        dx: f64,
+        dy: f64,
+    ) {
         self.pending.push(Command::SetTransform {
             id: element_id_from_f64(id),
-            matrix: m,
+            matrix: Some([xx, yx, xy, yy, dx, dy]),
         });
     }
 
@@ -615,18 +680,12 @@ impl HayateElementHtmlRenderer {
 
     /// Drains the queued element mutations, then refreshes the container's
     /// background colour. The browser handles reflow for the freshly-applied
-    /// styles in a single batch.
-    pub fn render(&mut self, bg_r: f64, bg_g: f64, bg_b: f64) -> Result<(), JsValue> {
+    /// styles in a single batch. `timestamp_ms` is accepted for API parity with
+    /// the Canvas renderer (HTML Mode has no cursor blink to advance — the
+    /// native `<input>` element handles it).
+    pub fn render(&mut self, _timestamp_ms: f64) -> Result<(), JsValue> {
         self.flush_pending()?;
-        self.container.style().set_property(
-            "background-color",
-            &format!(
-                "rgb({},{},{})",
-                (bg_r * 255.0) as u8,
-                (bg_g * 255.0) as u8,
-                (bg_b * 255.0) as u8,
-            ),
-        )?;
+        self.container.style().set_property("background-color", &self.background_css)?;
         Ok(())
     }
 
@@ -642,6 +701,8 @@ impl HayateElementHtmlRenderer {
             return;
         }
         self.event_queue.push(Event::Click { target, x, y });
+        self.event_queue.push(Event::ActiveStart { target });
+        self.active_element = Some(target);
         if self.focused_element != Some(target) {
             if let Some(prev) = self.focused_element {
                 self.event_queue.push(Event::Blur(prev));
@@ -651,11 +712,24 @@ impl HayateElementHtmlRenderer {
         }
     }
 
-    pub fn on_pointer_up(&mut self, target_id: f64, x: f32, y: f32) {
-        let target = element_id_from_f64(target_id);
-        if self.nodes.contains_key(target) {
-            self.event_queue.push(Event::PointerUp { target, x, y });
+    pub fn on_pointer_up(&mut self, target_id: f64, _x: f32, _y: f32) {
+        // Per ADR-0031 active-end reports the element that received active-start,
+        // matching the natural drag/release semantics. Coordinates are no longer
+        // part of the variant — use PointerMove for trailing-position tracking.
+        let explicit = element_id_from_f64(target_id);
+        let target = self
+            .active_element
+            .take()
+            .or_else(|| self.nodes.contains_key(explicit).then_some(explicit));
+        if let Some(target) = target {
+            self.event_queue.push(Event::ActiveEnd { target });
         }
+    }
+
+    pub fn on_pointer_move(&mut self, x: f32, y: f32) {
+        // Target-less coordinate stream — hover state is driven separately by
+        // the DOM mouseenter/mouseleave events.
+        self.event_queue.push(Event::PointerMove { x, y });
     }
 
     pub fn on_pointer_enter(&mut self, target_id: f64) {
@@ -665,10 +739,10 @@ impl HayateElementHtmlRenderer {
         }
         if self.hovered_element != Some(target) {
             if let Some(prev) = self.hovered_element {
-                self.event_queue.push(Event::PointerLeave { target: prev });
+                self.event_queue.push(Event::HoverLeave { target: prev });
             }
             self.hovered_element = Some(target);
-            self.event_queue.push(Event::PointerEnter { target });
+            self.event_queue.push(Event::HoverEnter { target });
         }
     }
 
@@ -676,7 +750,7 @@ impl HayateElementHtmlRenderer {
         let target = element_id_from_f64(target_id);
         if self.hovered_element == Some(target) {
             self.hovered_element = None;
-            self.event_queue.push(Event::PointerLeave { target });
+            self.event_queue.push(Event::HoverLeave { target });
         }
     }
 
@@ -732,12 +806,54 @@ impl HayateElementHtmlRenderer {
         Ok(())
     }
 
-    /// Clipboard paste is reported as a synthetic TextInput event targeting
-    /// the focused element. Native DOM IME already commits the text itself.
-    pub fn on_clipboard_paste(&mut self, text: &str) {
-        if let Some(focused) = self.focused_element {
-            self.event_queue.push(Event::TextInput { target: focused, text: text.to_string() });
+    /// WIT `element-load-font`: HTML Mode cannot read the family name out of
+    /// the font bytes (no Parley FontContext on the JS side). Surface as an
+    /// `@font-face` with a synthetic family name so the data URL is at least
+    /// resident in the document; consumers needing a specific family name
+    /// should keep using `register_font_bytes`.
+    pub fn element_load_font(&mut self, data: &[u8]) {
+        // Generate a stable-but-unique family name from a content hash.
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in data {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
         }
+        let family = format!("hayate-font-{h:016x}");
+        let _ = inject_font_face(&family, data);
+    }
+
+    /// WIT `element-paste`: deliver pasted text to a specific TextInput,
+    /// emitting a TextInput event. The browser commits the text into its
+    /// native `<input>` value separately on the DOM `paste` event.
+    pub fn element_paste(&mut self, id: f64, text: &str) {
+        let eid = element_id_from_f64(id);
+        if self.nodes.contains_key(eid) {
+            self.event_queue.push(Event::TextInput { target: eid, text: text.to_string() });
+        }
+    }
+
+    /// WIT `element-get-bounds`: return the element's CSS bounding box
+    /// [x, y, width, height] in container-relative pixels. Returns zeroes when
+    /// the element has not been laid out yet.
+    pub fn element_get_bounds(&self, id: f64) -> Box<[f32]> {
+        let eid = element_id_from_f64(id);
+        let dom = match self.nodes.get(eid).and_then(|n| n.dom.as_ref()) {
+            Some(d) => d,
+            None => return vec![0.0, 0.0, 0.0, 0.0].into_boxed_slice(),
+        };
+        let html_el = match dom.dyn_ref::<HtmlElement>() {
+            Some(e) => e,
+            None => return vec![0.0, 0.0, 0.0, 0.0].into_boxed_slice(),
+        };
+        // offsetLeft/Top are relative to the offsetParent — for our container-
+        // rooted tree this matches the WIT "canvas coordinates" expectation.
+        vec![
+            html_el.offset_left() as f32,
+            html_el.offset_top() as f32,
+            html_el.offset_width() as f32,
+            html_el.offset_height() as f32,
+        ]
+        .into_boxed_slice()
     }
 
     pub fn focused_element_id(&self) -> f64 {
@@ -1077,6 +1193,9 @@ impl HayateElementHtmlRenderer {
         if self.hovered_element == Some(target) {
             self.hovered_element = None;
         }
+        if self.active_element == Some(target) {
+            self.active_element = None;
+        }
     }
 
     fn flush_set_root(&mut self, new_root: ElementId) {
@@ -1193,20 +1312,22 @@ fn nearest_scroll_view(tree: &ElementTree, mut id: ElementId) -> Option<ElementI
 
 /// Encode an event list into a flat f64 array for JS consumption.
 ///
-/// Format per event:
-///   click:         [0,  target_ffi, x, y]
-///   focus:         [1,  target_ffi]
-///   blur:          [2,  target_ffi]
-///   text_input:    [3,  target_ffi]
-///   comp_start:    [4,  target_ffi]
-///   comp_update:   [5,  target_ffi]
-///   comp_end:      [6,  target_ffi]
-///   scroll:        [7,  target_ffi, delta_x, delta_y]
-///   resize:        [8,  width, height]
-///   pointer_up:    [9,  target_ffi, x, y]
-///   pointer_enter: [10, target_ffi]
-///   pointer_leave: [11, target_ffi]
-///   key_down:      [12, target_ffi, modifiers]
+/// Format per event (discriminants match the `event_kind_*` getters above):
+///   click:          [0,  target_ffi, x, y]
+///   focus:          [1,  target_ffi]
+///   blur:           [2,  target_ffi]
+///   text_input:     [3,  target_ffi]
+///   comp_start:     [4,  target_ffi]
+///   comp_update:    [5,  target_ffi]
+///   comp_end:       [6,  target_ffi]
+///   scroll:         [7,  target_ffi, delta_x, delta_y]
+///   resize:         [8,  width, height]
+///   active_end:     [9,  target_ffi]
+///   hover_enter:    [10, target_ffi]
+///   hover_leave:    [11, target_ffi]
+///   key_down:       [12, target_ffi, modifiers]
+///   active_start:   [13, target_ffi]
+///   pointer_move:   [14, x, y]               (no target — see ADR-0031)
 fn encode_events(events: &[Event]) -> Box<[f64]> {
     use slotmap::Key;
     let mut out: Vec<f64> = Vec::with_capacity(events.len() * 4);
@@ -1253,17 +1374,15 @@ fn encode_events(events: &[Event]) -> Box<[f64]> {
                 out.push(*width as f64);
                 out.push(*height as f64);
             }
-            Event::PointerUp { target, x, y } => {
+            Event::ActiveEnd { target } => {
                 out.push(9.0);
                 out.push(target.data().as_ffi() as f64);
-                out.push(*x as f64);
-                out.push(*y as f64);
             }
-            Event::PointerEnter { target } => {
+            Event::HoverEnter { target } => {
                 out.push(10.0);
                 out.push(target.data().as_ffi() as f64);
             }
-            Event::PointerLeave { target } => {
+            Event::HoverLeave { target } => {
                 out.push(11.0);
                 out.push(target.data().as_ffi() as f64);
             }
@@ -1271,6 +1390,15 @@ fn encode_events(events: &[Event]) -> Box<[f64]> {
                 out.push(12.0);
                 out.push(target.data().as_ffi() as f64);
                 out.push(*modifiers as f64);
+            }
+            Event::ActiveStart { target } => {
+                out.push(13.0);
+                out.push(target.data().as_ffi() as f64);
+            }
+            Event::PointerMove { x, y } => {
+                out.push(14.0);
+                out.push(*x as f64);
+                out.push(*y as f64);
             }
         }
     }
