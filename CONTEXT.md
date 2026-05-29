@@ -55,8 +55,8 @@ JS/TS ユーザー向けの純粋 JS フレームワーク。「GPU レンダリ
 _Avoid_: React hooks ベース（useState/useEffect ではない）、Virtual DOM、Hayabusa の JS アダプタ、Hayabusa のラッパー
 
 **Tsubame DOM Mode**:
-Tsubame の動作モードの一つ。ビルド時に HTML を生成し、ランタイムでは DOM を直接操作する。Hayate（WASM）を一切使用しない。JS→WASM 境界が存在しない。Hayate の HTML Mode（Hayate が DOM 要素で描画するモード）とは別概念であり、Hayate が関与しない点が根本的に異なる。
-_Avoid_: Hayate HTML Mode（Hayate 不使用のため）
+Tsubame の動作モードの一つ。CSR（Client-Side Rendering）のみ。ビルド時に JS バンドル + HTML シェルを生成し、ランタイムでその成果物を読み込んで Signal が DOM を直接操作する。SSG・SSR・ハイドレーションは行わない。Hayate（WASM）を一切使用しない。JS→WASM 境界が存在しない。Hayate の HTML Mode（Hayate が DOM 要素で描画するモード）とは別概念であり、Hayate が関与しない点が根本的に異なる。
+_Avoid_: SSG, SSR, ハイドレーション, Hayate HTML Mode（Hayate 不使用のため）
 
 **Tsubame Canvas Mode**:
 Tsubame の動作モードの一つ。Tsubame が JS 内でフレーム分の mutations を積み、`apply_mutations(batch)` で Hayate（WASM）に1回/frame で渡す。JS→WASM 境界の コストを O(N) から O(1)/frame に削減する。Hayate の Canvas Mode（Hayate が WebGPU で GPU 描画するモード）と組み合わせて動作する。
