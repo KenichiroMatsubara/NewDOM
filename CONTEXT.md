@@ -59,7 +59,7 @@ Tsubame Adapter の一つ。旧 Tsubame のコンポーネントモデル（`.ts
 _Avoid_: 旧 Tsubame との別物扱い
 
 **tsubame-vue**:
-Tsubame Adapter の一つ。`.vue` SFC（`<template>` / `<script>` / `<style>` の3セクション）形式を採用する。Vue の `ref`/`computed`/`watchEffect` 等は Tsubame の `createSignal`/`createMemo`/`createEffect` の薄いラッパーとして実装される。`<template>` は専用コンパイラが Renderer Protocol 呼び出しに変換する。`.vue` ファイル形式により Vue ユーザーおよび Svelte ユーザー（SFC 構文に親しみがある）が移行しやすい。
+Tsubame Adapter の一つ。`.vue` SFC（`<template>` / `<script>` / `<style>` の3セクション）形式を採用する。Vue の `ref`/`computed`/`watchEffect` 等は Tsubame の `createSignal`/`createMemo`/`createEffect` の薄いラッパーとして実装される。`<template>` は `@vue/compiler-dom` のコードジェネレータ部分を差し替えて Renderer Protocol 呼び出しに変換するコンパイラを使う。Vue のディレクティブ（`v-if` / `v-for` / `v-bind` 等）を完全互換で解析できる。`.vue` ファイル形式により Vue ユーザーおよび Svelte ユーザー（SFC 構文に親しみがある）が移行しやすい。
 _Avoid_: @vue/reactivity を内部で使う設計（Tsubame signal に統一するため）
 
 **Tsubame Adapter**:
