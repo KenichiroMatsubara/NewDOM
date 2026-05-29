@@ -10,12 +10,16 @@ use web_sys::{Document, Element, HtmlCanvasElement, HtmlElement, HtmlInputElemen
 use crate::gpu_surface::GpuSurface;
 use crate::style_packet;
 
-// ── Deferred command queue (ADR-0030) ────────────────────────────────────
+// ── Deferred command queue (ADR-0030, HTML Mode only per ADR-0037) ────────
 //
-// Every JS-facing `element_*` mutator pushes a `Command` onto a per-renderer
-// queue and returns immediately. `render()` is the sole flush boundary that
-// drains the queue and applies the commands. This batches DOM mutations in
-// HTML mode and amortises the JS→WASM boundary cost across a frame.
+// In HTML Mode every JS-facing `element_*` mutator pushes a `Command` onto a
+// per-renderer queue and returns immediately. `render()` is the sole flush
+// boundary that drains the queue and applies the commands, batching DOM
+// mutations so the browser reflows once per frame.
+//
+// Canvas Mode no longer queues (ADR-0037): Tsubame batches a frame's mutations
+// on the JS side and hands them over in one `apply_mutations` call, so the
+// `HayateElementRenderer` setters apply to the `ElementTree` eagerly.
 
 enum Command {
     SetText { id: ElementId, text: String },
@@ -115,8 +119,6 @@ pub struct HayateElementRenderer {
     /// the WIT `render` signature no longer carries it (ADR-0032 keeps render
     /// timestamp-only); call `set_background_color` separately.
     background: AlphaColor<Srgb>,
-    /// Deferred mutations applied at the start of every `render()` (ADR-0030).
-    pending: Vec<Command>,
 }
 
 #[wasm_bindgen]
@@ -134,7 +136,6 @@ impl HayateElementRenderer {
             active_element: None,
             last_pointer_pos: None,
             background: AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 1.0]),
-            pending: Vec::new(),
         })
     }
 
@@ -160,25 +161,16 @@ impl HayateElementRenderer {
     }
 
     pub fn element_set_text(&mut self, id: f64, text: &str) {
-        self.pending.push(Command::SetText {
-            id: element_id_from_f64(id),
-            text: text.to_string(),
-        });
+        self.tree.element_set_text(element_id_from_f64(id), text);
     }
 
     pub fn element_set_src(&mut self, id: f64, url: &str) {
-        self.pending.push(Command::SetSrc {
-            id: element_id_from_f64(id),
-            url: url.to_string(),
-        });
+        self.tree.element_set_src(element_id_from_f64(id), url);
     }
 
     pub fn element_set_style(&mut self, id: f64, packed: &[f32]) -> Result<(), JsValue> {
         let props = style_packet::decode(packed)?;
-        self.pending.push(Command::SetStyle {
-            id: element_id_from_f64(id),
-            props,
-        });
+        self.tree.element_set_style(element_id_from_f64(id), &props);
         Ok(())
     }
 
@@ -195,34 +187,41 @@ impl HayateElementRenderer {
         dx: f64,
         dy: f64,
     ) {
-        self.pending.push(Command::SetTransform {
-            id: element_id_from_f64(id),
-            matrix: Some([xx, yx, xy, yy, dx, dy]),
-        });
+        self.tree.element_set_transform(
+            element_id_from_f64(id),
+            Some([xx, yx, xy, yy, dx, dy]),
+        );
     }
 
     pub fn element_append_child(&mut self, parent: f64, child: f64) {
-        self.pending.push(Command::AppendChild {
-            parent: element_id_from_f64(parent),
-            child: element_id_from_f64(child),
-        });
+        self.tree.element_append_child(
+            element_id_from_f64(parent),
+            element_id_from_f64(child),
+        );
     }
 
     pub fn element_insert_before(&mut self, parent: f64, child: f64, before: f64) {
-        self.pending.push(Command::InsertBefore {
-            parent: element_id_from_f64(parent),
-            child: element_id_from_f64(child),
-            before: element_id_from_f64(before),
-        });
+        self.tree.element_insert_before(
+            element_id_from_f64(parent),
+            element_id_from_f64(child),
+            element_id_from_f64(before),
+        );
     }
 
     pub fn element_remove(&mut self, id: f64) {
-        self.pending.push(Command::Remove { id: element_id_from_f64(id) });
+        let id = element_id_from_f64(id);
+        if self.hovered_element == Some(id) {
+            self.hovered_element = None;
+        }
+        if self.active_element == Some(id) {
+            self.active_element = None;
+        }
+        // The tree clears its own focused_element on remove.
+        self.tree.element_remove(id);
     }
 
-    /// Returns the text committed by the most recent `render()`. Updates from
-    /// queued `element_set_text` calls are not visible until the next flush
-    /// (ADR-0030).
+    /// Returns the element's current text. Canvas Mode applies `element_set_text`
+    /// eagerly (ADR-0037), so this reflects the latest setter call immediately.
     pub fn element_get_text(&self, id: f64) -> String {
         self.tree.element_get_text(element_id_from_f64(id))
     }
@@ -237,13 +236,13 @@ impl HayateElementRenderer {
     }
 
     pub fn set_root(&mut self, id: f64) {
-        self.pending.push(Command::SetRoot { id: element_id_from_f64(id) });
+        self.tree.set_root(element_id_from_f64(id));
     }
 
-    /// Drain pending commands, advance cursor blink, run layout, and present.
-    /// `timestamp_ms` should be a monotonic clock (e.g. `performance.now()`).
+    /// Advance cursor blink, run layout, and present. `timestamp_ms` should be a
+    /// monotonic clock (e.g. `performance.now()`). Mutations are applied eagerly
+    /// by the `element_*` setters (ADR-0037), so `render` only drives layout.
     pub fn render(&mut self, timestamp_ms: f64) -> Result<(), JsValue> {
-        self.flush_pending();
         let sg = self.tree.render(timestamp_ms);
         let scene = vello_bridge::build_scene(sg);
         self.gpu.present(&scene, self.background)
@@ -334,32 +333,19 @@ impl HayateElementRenderer {
     }
 
     pub fn element_set_scroll_offset(&mut self, id: f64, x: f32, y: f32) {
-        self.pending.push(Command::SetScrollOffset {
-            id: element_id_from_f64(id),
-            x,
-            y,
-        });
+        self.tree.element_set_scroll_offset(element_id_from_f64(id), x, y);
     }
 
     pub fn element_set_font_family(&mut self, id: f64, family: &str) {
-        self.pending.push(Command::SetFontFamily {
-            id: element_id_from_f64(id),
-            family: family.to_string(),
-        });
+        self.tree.element_set_font_family(element_id_from_f64(id), family);
     }
 
     pub fn element_set_aria_label(&mut self, id: f64, label: &str) {
-        self.pending.push(Command::SetAriaLabel {
-            id: element_id_from_f64(id),
-            label: label.to_string(),
-        });
+        self.tree.element_set_aria_label(element_id_from_f64(id), label);
     }
 
     pub fn element_set_role(&mut self, id: f64, role: &str) {
-        self.pending.push(Command::SetRole {
-            id: element_id_from_f64(id),
-            role: role.to_string(),
-        });
+        self.tree.element_set_role(element_id_from_f64(id), role);
     }
 
     /// Register a custom font from raw bytes. After this, the family_name can be used
@@ -445,15 +431,25 @@ impl HayateElementRenderer {
     }
 
     pub fn element_set_text_content(&mut self, id: f64, text: &str) {
-        self.pending.push(Command::SetTextContent {
-            id: element_id_from_f64(id),
-            text: text.to_string(),
-        });
+        self.tree.element_set_text_content(element_id_from_f64(id), text);
     }
 
-    /// Returns the editable text content committed by the most recent `render()`.
-    /// Queued `element_set_text_content` calls are not visible until the next
-    /// flush (ADR-0030).
+    /// Batch apply: invoked once per frame by Tsubame (Canvas Mode), which
+    /// batches a frame's worth of mutations on the JS side and hands them over
+    /// in one call (ADR-0037). `batch` is a flat `f64` array of repeated
+    /// `[op_kind, args...]` records; `op_kind` follows the same constant style
+    /// as `element_kind_*`.
+    ///
+    /// The concrete encoding is still being finalised with Tsubame, so this is
+    /// a placeholder that will be filled in once that contract is settled.
+    #[wasm_bindgen]
+    pub fn apply_mutations(&mut self, batch: &js_sys::Array) -> Result<(), JsValue> {
+        // TODO: implement once Tsubame's encoding spec is finalised.
+        let _ = batch;
+        Ok(())
+    }
+
+    /// Returns the editable text content from the live tree.
     pub fn element_get_text_content(&self, id: f64) -> String {
         self.tree.element_get_text_content(element_id_from_f64(id))
     }
@@ -461,56 +457,6 @@ impl HayateElementRenderer {
     pub fn poll_events(&mut self) -> js_sys::Array {
         let events = self.tree.poll_events();
         encode_events(&events)
-    }
-}
-
-impl HayateElementRenderer {
-    /// Drain the pending command queue and apply each mutation to the
-    /// underlying `ElementTree`. Called from `render()` (the sole flush
-    /// boundary per ADR-0030).
-    fn flush_pending(&mut self) {
-        let commands = std::mem::take(&mut self.pending);
-        for cmd in commands {
-            match cmd {
-                Command::SetText { id, text } => self.tree.element_set_text(id, &text),
-                Command::SetSrc { id, url } => self.tree.element_set_src(id, &url),
-                Command::SetStyle { id, props } => self.tree.element_set_style(id, &props),
-                Command::SetTransform { id, matrix } => self.tree.element_set_transform(id, matrix),
-                Command::SetScrollOffset { id, x, y } => {
-                    self.tree.element_set_scroll_offset(id, x, y);
-                }
-                Command::SetFontFamily { id, family } => {
-                    self.tree.element_set_font_family(id, &family);
-                }
-                Command::SetAriaLabel { id, label } => {
-                    self.tree.element_set_aria_label(id, &label);
-                }
-                Command::SetRole { id, role } => self.tree.element_set_role(id, &role),
-                Command::SetTextContent { id, text } => {
-                    self.tree.element_set_text_content(id, &text);
-                }
-                Command::AppendChild { parent, child } => {
-                    self.tree.element_append_child(parent, child);
-                }
-                Command::InsertBefore { parent, child, before } => {
-                    self.tree.element_insert_before(parent, child, before);
-                }
-                Command::Remove { id } => {
-                    if self.hovered_element == Some(id) {
-                        self.hovered_element = None;
-                    }
-                    if self.active_element == Some(id) {
-                        self.active_element = None;
-                    }
-                    // The tree clears its own focused_element on remove.
-                    self.tree.element_remove(id);
-                }
-                Command::SetRoot { id } => self.tree.set_root(id),
-                // Canvas mode allocates tree entries eagerly in element_create;
-                // this variant is only emitted by HTML mode.
-                Command::HtmlCreate { .. } => {}
-            }
-        }
     }
 }
 
