@@ -766,3 +766,69 @@ fn semantic_event_variants_roundtrip_through_poll() {
     assert!(matches!(&events[3], Event::HoverLeave { .. }));
     assert!(matches!(&events[4], Event::PointerMove { x, y } if (*x - 12.5).abs() < 1e-3 && (*y - 34.0).abs() < 1e-3));
 }
+
+// ── Clipboard paste tests ─────────────────────────────────────────────────
+
+#[test]
+fn paste_into_empty_text_input_sets_content() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+
+    tree.element_paste(input, "hello");
+    assert_eq!(tree.element_get_text_content(input), "hello");
+}
+
+#[test]
+fn paste_appends_to_existing_content() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+
+    tree.element_append_text_content(input, "abc");
+    tree.element_paste(input, "def");
+    assert_eq!(tree.element_get_text_content(input), "abcdef");
+}
+
+#[test]
+fn paste_commits_active_preedit_then_appends() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+
+    tree.element_append_text_content(input, "abc");
+    tree.element_set_preedit(input, "DEF"); // in-progress IME composition
+    tree.element_paste(input, "xyz");
+
+    // Preedit should be committed and pasted text appended after it.
+    assert_eq!(tree.element_get_text_content(input), "abcDEFxyz");
+    // Setting preedit to empty after paste should not change anything.
+    tree.element_set_preedit(input, "");
+    assert_eq!(tree.element_get_text_content(input), "abcDEFxyz");
+}
+
+#[test]
+fn paste_queues_text_input_event() {
+    let mut tree = ElementTree::new();
+    let input = tree.element_create(ElementKind::TextInput);
+    tree.set_root(input);
+
+    tree.element_paste(input, "hello");
+    let events = tree.poll_events();
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], Event::TextInput { text, .. } if text == "hello"),
+        "expected TextInput event with pasted text"
+    );
+}
+
+#[test]
+fn paste_on_non_text_input_is_noop() {
+    let mut tree = ElementTree::new();
+    let view = tree.element_create(ElementKind::View);
+    tree.set_root(view);
+
+    tree.element_paste(view, "ignored");
+    // No events, no panic.
+    assert!(tree.poll_events().is_empty());
+}

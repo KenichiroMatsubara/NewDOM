@@ -419,6 +419,23 @@ impl ElementTree {
         }
     }
 
+    /// Deliver pasted text to a TextInput: commits any active preedit, appends the
+    /// pasted text, then queues a TextInput event. No-op for non-TextInput elements.
+    pub fn element_paste(&mut self, id: ElementId, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let el = match self.elements.get_mut(id) {
+            Some(e) if e.kind == ElementKind::TextInput => e,
+            _ => return,
+        };
+        if let Some(preedit) = el.preedit.take() {
+            el.text_content.push_str(&preedit);
+        }
+        el.text_content.push_str(text);
+        self.event_queue.push(Event::TextInput { target: id, text: text.to_string() });
+    }
+
     /// Return the combined display text (text_content + any active preedit) for a TextInput.
     pub fn element_get_text_content(&self, id: ElementId) -> String {
         let el = match self.elements.get(id) {

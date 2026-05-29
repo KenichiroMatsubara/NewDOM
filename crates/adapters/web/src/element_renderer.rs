@@ -394,9 +394,7 @@ impl HayateElementRenderer {
     /// Deliver pasted text to a specific TextInput element. WIT-aligned
     /// (`element-paste`); replaces the implicit-focus `on_clipboard_paste`.
     pub fn element_paste(&mut self, id: f64, text: &str) {
-        let eid = element_id_from_f64(id);
-        self.tree.element_append_text_content(eid, text);
-        self.tree.push_event(Event::TextInput { target: eid, text: text.to_string() });
+        self.tree.element_paste(element_id_from_f64(id), text);
     }
 
     /// Return the focused element's id (as f64), or 0.0 if nothing is focused.
