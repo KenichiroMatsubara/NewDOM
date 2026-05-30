@@ -355,15 +355,6 @@
 
     renderer.set_background_color(0.04, 0.06, 0.1);
 
-    // 日本語フォントをロード（Canvas Mode では WASM バイナリに CJK グリフが
-    // 含まれないため、NotoSansJP を明示的に登録する）
-    try {
-      overlay('🔤', '日本語フォントをロード中...', 'NotoSansJP.ttf');
-      await renderer.load_font_from_url('Noto Sans JP', './fonts/NotoSansJP.ttf');
-    } catch (fontErr) {
-      console.warn('[demo-05] 日本語フォントのロードに失敗しました:', fontErr);
-    }
-
     // ── 5. シーン構築 ───────────────────────────────────────────────────────
     step('s5', 'run');
     overlay('🎨', 'シーンを構築中...');
@@ -391,7 +382,6 @@
         { tag: TAG.FONT_SIZE, payload: [14] },
         { tag: TAG.COLOR,     payload: [0.44, 0.52, 0.6, 1.0] },
       ]));
-      renderer.element_set_font_family(labelId, 'Noto Sans JP');
       renderer.element_append_child(rootId, labelId);
 
       // text-input
@@ -407,7 +397,6 @@
         { tag: TAG.FONT_SIZE,        payload: [16] },
         { tag: TAG.COLOR,            payload: [0.88, 0.92, 0.96, 1.0] },
       ]));
-      renderer.element_set_font_family(inputId, 'Noto Sans JP');
       renderer.element_set_text_content(inputId, '');
       renderer.element_append_child(rootId, inputId);
 

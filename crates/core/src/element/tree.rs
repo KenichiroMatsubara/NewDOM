@@ -152,7 +152,7 @@ fn init_bundled_fonts(font_cx: &mut FontContext) {
     use vello::peniko::Blob;
 
     static NOTO_SANS_BYTES: &[u8] =
-        include_bytes!("../../assets/fonts/NotoSans-Regular.ttf");
+        include_bytes!("../../assets/fonts/NotoSansJP.ttf");
 
     let blob = Blob::new(Arc::new(NOTO_SANS_BYTES));
     let override_info = FontInfoOverride {
@@ -377,12 +377,29 @@ impl ElementTree {
         use fontique::FontInfoOverride;
         use std::sync::Arc;
         use vello::peniko::Blob;
-        let blob = Blob::new(Arc::new(bytes));
+
+        let data = Arc::new(bytes);
+
+        // 要求名で登録（element_set_font_family による明示的な指定に対応）
+        let blob = Blob::new(data.clone());
         let override_info = FontInfoOverride {
             family_name: Some(family_name),
             ..Default::default()
         };
         self.font_cx.collection.register_fonts(blob, Some(override_info));
+
+        // デフォルトファミリ ("Noto Sans") にも登録する。
+        // build_text_layout のデフォルトスタックは常に DEFAULT_FONT_FAMILY を参照するため、
+        // 追加フォントを element_set_font_family なしで全要素から自動的に使えるようにする。
+        // 同名での二重登録は fontique が内部でマージするためグリフ競合は発生しない。
+        if family_name != text::DEFAULT_FONT_FAMILY {
+            let fallback_blob = Blob::new(data);
+            let fallback_override = FontInfoOverride {
+                family_name: Some(text::DEFAULT_FONT_FAMILY),
+                ..Default::default()
+            };
+            self.font_cx.collection.register_fonts(fallback_blob, Some(fallback_override));
+        }
     }
 
     /// Register a font from raw bytes using the family name(s) embedded in the

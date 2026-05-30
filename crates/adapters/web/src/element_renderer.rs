@@ -1485,6 +1485,13 @@ async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
     let window = web_sys::window().ok_or("no window")?;
     let resp: web_sys::Response =
         JsFuture::from(window.fetch_with_str(url)).await?.dyn_into()?;
+    if !resp.ok() {
+        return Err(JsValue::from_str(&format!(
+            "fetch failed: {} {}",
+            resp.status(),
+            resp.status_text()
+        )));
+    }
     let buf: ArrayBuffer = JsFuture::from(resp.array_buffer()?).await?.dyn_into()?;
     Ok(Uint8Array::new(&buf).to_vec())
 }
