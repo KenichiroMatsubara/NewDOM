@@ -840,6 +840,23 @@ impl ElementTree {
                     event_queue.push(Event::FetchFont { family: fam.to_string() });
                 }
             }
+            // Proactively fetch named fonts: Latin fonts produce no .notdef glyphs
+            // so script-based detection never fires for them. If the resolved family
+            // is not yet in the fontique collection, request it now so the next
+            // register_font() → fonts_dirty cycle will re-shape with the real font.
+            if let Some(el) = elements.get(&eid) {
+                if let Some(ref fam) = el.visual.font_family {
+                    let resolved = text::resolve_generic_family(fam);
+                    if resolved != text::DEFAULT_FONT_FAMILY
+                        && !pending_font_fetches.contains(resolved)
+                        && font_cx.collection.family_id(resolved).is_none()
+                    {
+                        let owned = resolved.to_string();
+                        pending_font_fetches.insert(owned.clone());
+                        event_queue.push(Event::FetchFont { family: owned });
+                    }
+                }
+            }
             if let Some(el) = elements.get_mut(&eid) {
                 el.text_layout = Some(layout);
             }
@@ -893,6 +910,17 @@ impl ElementTree {
                 if !pending_font_fetches.contains(fam) {
                     pending_font_fetches.insert(fam.to_string());
                     event_queue.push(Event::FetchFont { family: fam.to_string() });
+                }
+            }
+            if let Some(ref fam) = font_family {
+                let resolved = text::resolve_generic_family(fam);
+                if resolved != text::DEFAULT_FONT_FAMILY
+                    && !pending_font_fetches.contains(resolved)
+                    && font_cx.collection.family_id(resolved).is_none()
+                {
+                    let owned = resolved.to_string();
+                    pending_font_fetches.insert(owned.clone());
+                    event_queue.push(Event::FetchFont { family: owned });
                 }
             }
             if let Some(el) = elements.get_mut(&eid) {

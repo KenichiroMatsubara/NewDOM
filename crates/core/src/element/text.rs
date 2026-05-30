@@ -92,7 +92,7 @@ fn codepoint_font_family(cp: u32) -> Option<&'static str> {
 /// HTML Mode passes the value straight to the browser, which resolves generics
 /// natively. Canvas Mode (Parley/Vello) has no system-font access in WASM, so
 /// generic keywords are mapped to bundled or on-demand-fetched Noto fonts.
-fn resolve_generic_family(name: &str) -> &str {
+pub(crate) fn resolve_generic_family(name: &str) -> &str {
     match name {
         // sans-serif generics → default (Noto Sans, already bundled)
         "sans-serif"
