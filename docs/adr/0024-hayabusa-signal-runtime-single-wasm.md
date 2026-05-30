@@ -1,5 +1,7 @@
 # Hayabusa の Signal ランタイムは単一 WASM バイナリとして実装する
 
+status: superseded by ADR-0045
+
 Signal グラフの追跡・伝播・スケジューリングを担うランタイムは
 Hayabusa の単一 WASM バイナリとして提供する。
 TypeScript / Rust / Python 等の全 Script Adapter はこのランタイムを
