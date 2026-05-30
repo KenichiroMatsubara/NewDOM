@@ -308,12 +308,6 @@
     const EV_COMP_UPDATE = mod.event_kind_composition_update();
     const EV_COMP_END    = mod.event_kind_composition_end();
     const EV_KEY_DOWN    = mod.event_kind_key_down();
-    const EV_FETCH_FONT  = mod.event_kind_fetch_font();
-
-    // フォントファミリ名 → CDN URL のマッピング（アダプタ層の責務）
-    const FONT_URL_MAP = {
-      'Noto Sans JP': 'https://fonts.gstatic.com/s/notosansjp/v53/-F6jfjtqLzI2JPCgQBnw7HFyzSD-AsregP8VFBEj75vY0rw-oME.woff2',
-    };
 
     // ── 4. Renderer 初期化 ─────────────────────────────────────────────────
     step('s4', 'run');
@@ -600,17 +594,6 @@
           // 同上
         } else if (kind === EV_KEY_DOWN) {
           // Canvas Mode ではすでに logEvent 済み
-        } else if (kind === EV_FETCH_FONT) {
-          const family = ev[1];
-          const url = FONT_URL_MAP[family];
-          if (url) {
-            logEvent('font', `FetchFont: "${family}" → ダウンロード中...`);
-            renderer.load_font_from_url(family, url)
-              .then(() => logEvent('font', `FetchFont: "${family}" ロード完了`))
-              .catch(e => logEvent('font', `FetchFont: "${family}" 失敗: ${e}`));
-          } else {
-            logEvent('font', `FetchFont: "${family}" — URL マッピングなし`);
-          }
         }
       }
     }

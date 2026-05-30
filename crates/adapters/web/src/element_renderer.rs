@@ -1,11 +1,30 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use hayate_core::{ElementId, ElementKind, ElementTree, Event, StyleProp, vello_bridge};
-use std::collections::HashMap;
 use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat, color::{AlphaColor, Srgb}};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Document, Element, HtmlCanvasElement, HtmlElement, HtmlInputElement, Node};
+
+/// Fonts fetched asynchronously by the adapter; drained into the tree on the
+/// next `poll_events()` call (single-threaded WASM — Rc<RefCell> is safe).
+type FontQueue = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
+
+/// Built-in family-name → CDN URL table for fonts the web adapter fetches
+/// automatically when .notdef glyphs are detected (ADR-0043).
+/// Only TTF/OTF URLs are valid; the font stack (fontique/skrifa) does not
+/// support WOFF2.
+fn builtin_font_url(family: &str) -> Option<&'static str> {
+    match family {
+        "Noto Sans JP" => Some(
+            "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf"
+        ),
+        _ => None,
+    }
+}
 
 use crate::gpu_surface::GpuSurface;
 use crate::style_packet;
@@ -82,7 +101,6 @@ fn kind_from_u32(v: u32) -> Result<ElementKind, JsValue> {
 #[wasm_bindgen] pub fn event_kind_key_down()            -> f64 { 12.0 }
 #[wasm_bindgen] pub fn event_kind_active_start()        -> f64 { 13.0 }
 #[wasm_bindgen] pub fn event_kind_pointer_move()        -> f64 { 14.0 }
-#[wasm_bindgen] pub fn event_kind_fetch_font()          -> f64 { 15.0 }
 
 // ── Modifier key bitmask constants (exposed to JS) ───────────────────────
 // Match KeyboardEvent.getModifierState flags for JS interop.
@@ -132,6 +150,8 @@ pub struct HayateElementRenderer {
     /// the WIT `render` signature no longer carries it (ADR-0032 keeps render
     /// timestamp-only); call `set_background_color` separately.
     background: AlphaColor<Srgb>,
+    /// Fonts fetched by spawned futures; applied to the tree on next poll_events.
+    font_queue: FontQueue,
 }
 
 #[wasm_bindgen]
@@ -149,6 +169,7 @@ impl HayateElementRenderer {
             active_element: None,
             last_pointer_pos: None,
             background: AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 1.0]),
+            font_queue: Rc::new(RefCell::new(Vec::new())),
         })
     }
 
@@ -575,8 +596,37 @@ impl HayateElementRenderer {
     }
 
     pub fn poll_events(&mut self) -> js_sys::Array {
+        // Apply fonts that finished fetching since the last frame.
+        let loaded: Vec<(String, Vec<u8>)> = self.font_queue.borrow_mut().drain(..).collect();
+        for (family, bytes) in loaded {
+            self.tree.register_font(&family, bytes);
+        }
+
+        // Drain events; intercept FetchFont and handle it here (ADR-0043).
         let events = self.tree.poll_events();
-        encode_events(&events)
+        let mut visible = Vec::with_capacity(events.len());
+        for event in events {
+            match event {
+                Event::FetchFont { family } => {
+                    if let Some(url) = builtin_font_url(&family) {
+                        let queue = self.font_queue.clone();
+                        let url = url.to_string();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match fetch_bytes(&url).await {
+                                Ok(bytes) => queue.borrow_mut().push((family, bytes)),
+                                Err(e) => web_sys::console::warn_1(&e),
+                            }
+                        });
+                    } else {
+                        web_sys::console::warn_1(
+                            &JsValue::from_str(&format!("FetchFont: no URL for \"{family}\"")),
+                        );
+                    }
+                }
+                other => visible.push(other),
+            }
+        }
+        encode_events(&visible)
     }
 }
 
@@ -1433,6 +1483,7 @@ fn nearest_scroll_view(tree: &ElementTree, mut id: ElementId) -> Option<ElementI
 ///   key_down:     [12, target_ffi, key: string, modifiers]  (WIT order: target→key→modifiers)
 ///   active_start: [13, target_ffi]
 ///   pointer_move: [14, x, y]                                (no target — ADR-0031)
+/// FetchFont is handled internally by poll_events and never reaches JS (ADR-0043).
 fn encode_events(events: &[Event]) -> js_sys::Array {
     use js_sys::Array;
     let result = Array::new();
